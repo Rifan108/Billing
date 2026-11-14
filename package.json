@@ -1,0 +1,38 @@
+{
+  "name": "textile-shop-billing-management",
+  "version": "1.0.0",
+  "description": "Professional Textile Shop Billing & Management Software - GST Invoicing Platform",
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js",
+    "server": "node server/server.js",
+    "client": "cd client && npm run dev",
+    "build": "cd client && npm run build",
+    "dev": "concurrently \"npm run server\" \"npm run client\""
+  },
+  "keywords": [
+    "textile",
+    "billing",
+    "gst",
+    "inventory",
+    "pos",
+    "retail",
+    "wholesale"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^13.1.1",
+    "concurrently": "^10.0.7",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.10",
+    "express": "^5.3.0",
+    "jpeg-js": "^0.4.4",
+    "jsonwebtoken": "^9.0.3",
+    "jsqr": "^1.4.0",
+    "multer": "^2.5.0",
+    "qrcode": "^1.5.4",
+    "xlsx": "^0.18.5"
+  }
+}

@@ -1,0 +1,44 @@
+﻿# Dependencies
+node_modules/
+client/node_modules/
+
+# Production builds
+dist/
+client/dist/
+
+# SQLite Databases & WAL Logs
+*.db
+*.db-shm
+*.db-wal
+textile_billing.db*
+
+# Backups
+backups/*
+!backups/.gitkeep
+
+# Exclude QR Images & Uploads (DO NOT PUSH QR)
+uploads/*
+!uploads/.gitkeep
+client/public/uploads/*
+!client/public/uploads/.gitkeep
+*default_upi_qr*
+*qr_code*
+*.jpg
+*.jpeg
+*.png
+*.gif
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
