@@ -12,10 +12,15 @@ import {
   CreditCard,
   Building,
   RotateCcw,
-  Sparkles
+  Sparkles,
+  X,
+  CornerDownLeft,
+  Package,
+  Tag,
+  CheckCircle2
 } from 'lucide-react';
 import api from '../services/api';
-import { Product, Customer, ShopSettings, TextileUnit, PaymentMethod, Invoice } from '../types';
+import { Product, Customer, ShopSettings, TextileUnit, PaymentMethod, Invoice, Category } from '../types';
 
 interface BillingPageProps {
   onInvoiceCreated: (inv: Invoice, autoPrint?: boolean) => void;
@@ -78,10 +83,38 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
   // Line items
   const [items, setItems] = useState<BillItem[]>([]);
 
+  // Categories
+  const [categories, setCategories] = useState<Category[]>([]);
+
   // Product Search / Scanner state
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Product[]>([]);
   const [showProductDropdown, setShowProductDropdown] = useState(false);
+  const [isSearchingProduct, setIsSearchingProduct] = useState(false);
+  const [selectedSearchIndex, setSelectedSearchIndex] = useState(-1);
+
+  // Staged Product for fast quantity entry
+  interface StagedProductState {
+    product: Product;
+    quantity: number;
+    rate: number;
+    discount_value: number;
+  }
+  const [stagedProduct, setStagedProduct] = useState<StagedProductState | null>(null);
+
+  // Quick Add Product Modal state
+  const [showQuickAddModal, setShowQuickAddModal] = useState(false);
+  const [quickAddName, setQuickAddName] = useState('');
+  const [quickAddSku, setQuickAddSku] = useState('');
+  const [quickAddCategoryId, setQuickAddCategoryId] = useState<number | ''>('');
+  const [quickAddHsn, setQuickAddHsn] = useState('5208');
+  const [quickAddUnit, setQuickAddUnit] = useState<TextileUnit>('Pieces');
+  const [quickAddSellingPrice, setQuickAddSellingPrice] = useState<number | ''>('');
+  const [quickAddPurchasePrice, setQuickAddPurchasePrice] = useState<number | ''>('');
+  const [quickAddGstRate, setQuickAddGstRate] = useState<number>(5);
+  const [quickAddStock, setQuickAddStock] = useState<number>(10);
+  const [quickAddError, setQuickAddError] = useState('');
+  const [quickAddSaving, setQuickAddSaving] = useState(false);
 
   // Bill-level Discount
   const [billDiscountType, setBillDiscountType] = useState<'flat' | 'percent'>('flat');
@@ -103,8 +136,11 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
   const [error, setError] = useState('');
 
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchContainerRef = useRef<HTMLDivElement>(null);
+  const stagedQtyInputRef = useRef<HTMLInputElement>(null);
+  const quickAddPriceInputRef = useRef<HTMLInputElement>(null);
 
-  // Load shop settings and Indian states list
+  // Load shop settings, Indian states list, and Categories
   useEffect(() => {
     api.get('/shop').then(res => {
       setShop(res.data);
@@ -118,56 +154,168 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
       setStates(res.data);
     });
 
-    // Keyboard shortcut listener: F2 to focus product search, Esc to close dropdowns
+    api.get('/products/categories').then(res => {
+      setCategories(res.data);
+    }).catch(console.error);
+
+    // Keyboard shortcut listener: F2 to focus product search, Esc to close dropdowns / cancel staging
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'F2') {
         e.preventDefault();
+        setStagedProduct(null);
         searchInputRef.current?.focus();
+        searchInputRef.current?.select();
       } else if (e.key === 'Escape') {
         setShowProductDropdown(false);
         setShowCustomerDropdown(false);
+        if (stagedProduct) {
+          setStagedProduct(null);
+          searchInputRef.current?.focus();
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [stagedProduct]);
+
+  // Click outside to dismiss product dropdown
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (searchContainerRef.current && !searchContainerRef.current.contains(e.target as Node)) {
+        setShowProductDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
   // Is Inter-state determined dynamically
   const isInterState = shop ? (placeOfSupplyCode !== shop.state_code) : false;
 
-  // Search products
+  // Search products with debounce & auto-selection of first item
   useEffect(() => {
     if (!searchQuery.trim()) {
       setSearchResults([]);
+      setShowProductDropdown(false);
+      setSelectedSearchIndex(-1);
+      setIsSearchingProduct(false);
       return;
     }
+    setIsSearchingProduct(true);
     const timer = setTimeout(() => {
       api.get(`/billing/search-products?q=${encodeURIComponent(searchQuery)}`)
         .then(res => {
           setSearchResults(res.data);
           setShowProductDropdown(true);
+          setSelectedSearchIndex(res.data.length > 0 ? 0 : -1);
         })
-        .catch(console.error);
-    }, 150);
+        .catch(console.error)
+        .finally(() => {
+          setIsSearchingProduct(false);
+        });
+    }, 120);
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
-  // Search customers by phone or name
+  // Scroll active dropdown item into view
   useEffect(() => {
-    if (!customerQuery.trim()) {
-      setCustomerResults([]);
+    if (selectedSearchIndex >= 0 && searchResults.length > 0) {
+      const el = document.getElementById(`search-result-item-${selectedSearchIndex}`);
+      el?.scrollIntoView({ block: 'nearest' });
+    }
+  }, [selectedSearchIndex, searchResults]);
+
+  // Auto-focus and select quantity when stagedProduct is opened
+  useEffect(() => {
+    if (stagedProduct) {
+      const t = setTimeout(() => {
+        stagedQtyInputRef.current?.focus();
+        stagedQtyInputRef.current?.select();
+      }, 50);
+      return () => clearTimeout(t);
+    }
+  }, [stagedProduct]);
+
+  // Auto-generate textile SKU
+  const generateSku = (prodName: string) => {
+    const clean = prodName.replace(/[^a-zA-Z0-9]/g, '').slice(0, 3).toUpperCase() || 'TXT';
+    const rand = Math.floor(100 + Math.random() * 900);
+    return `${clean}-${rand}`;
+  };
+
+  // Open Quick Add Modal
+  const openQuickAddModal = (name: string = '') => {
+    const trimmedName = name.trim();
+    setQuickAddName(trimmedName);
+    setQuickAddSku(generateSku(trimmedName));
+    const defaultCat = categories.length > 0 ? categories[0] : null;
+    setQuickAddCategoryId(defaultCat ? defaultCat.id : '');
+    setQuickAddHsn(defaultCat?.hsn_default || '5208');
+    setQuickAddUnit('Pieces');
+    setQuickAddSellingPrice('');
+    setQuickAddPurchasePrice('');
+    setQuickAddGstRate(defaultCat?.gst_default || 5);
+    setQuickAddStock(10);
+    setQuickAddError('');
+    setShowProductDropdown(false);
+    setShowQuickAddModal(true);
+    setTimeout(() => {
+      quickAddPriceInputRef.current?.focus();
+    }, 120);
+  };
+
+  // Handle Quick Add Submit
+  const handleQuickAddSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!quickAddName.trim()) {
+      setQuickAddError('Product name is required');
       return;
     }
-    const timer = setTimeout(() => {
-      api.get(`/billing/search-customers?q=${encodeURIComponent(customerQuery)}`)
-        .then(res => {
-          setCustomerResults(res.data);
-          setShowCustomerDropdown(true);
-        })
-        .catch(console.error);
-    }, 200);
-    return () => clearTimeout(timer);
-  }, [customerQuery]);
+    if (!quickAddSku.trim()) {
+      setQuickAddError('Product code / SKU is required');
+      return;
+    }
+    if (quickAddSellingPrice === '' || Number(quickAddSellingPrice) < 0) {
+      setQuickAddError('Please enter a valid selling price');
+      quickAddPriceInputRef.current?.focus();
+      return;
+    }
+
+    setQuickAddSaving(true);
+    setQuickAddError('');
+
+    try {
+      const payload = {
+        name: quickAddName.trim(),
+        sku: quickAddSku.trim().toUpperCase(),
+        category_id: quickAddCategoryId || null,
+        hsn_code: quickAddHsn.trim() || '5208',
+        unit: quickAddUnit,
+        purchase_price: Number(quickAddPurchasePrice) || 0,
+        selling_price: Number(quickAddSellingPrice) || 0,
+        is_tax_inclusive: false,
+        gst_rate: Number(quickAddGstRate) || 5.0,
+        stock_quantity: Number(quickAddStock) || 0,
+        min_stock_alert: 5,
+        supplier: 'Direct Billing Quick-Add',
+        description: `Created directly during billing on ${new Date().toLocaleDateString()}`
+      };
+
+      const res = await api.post('/products', payload);
+      const createdProduct: Product = res.data;
+
+      // Close modal
+      setShowQuickAddModal(false);
+
+      // Automatically add newly created product to the current bill
+      addProductToBill(createdProduct, 1);
+      setSearchQuery('');
+    } catch (err: any) {
+      setQuickAddError(err.response?.data?.error || 'Failed to create product. Please verify fields.');
+    } finally {
+      setQuickAddSaving(false);
+    }
+  };
 
   // Compute item numbers
   const computeItem = (item: BillItem, interState: boolean): BillItem => {
@@ -223,13 +371,30 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
     };
   };
 
-  // Add product from search
-  const addProductToBill = (p: Product) => {
-    // Check if already in bill -> increment quantity
+  // Stage product for quantity entry
+  const stageProduct = (p: Product) => {
+    setStagedProduct({
+      product: p,
+      quantity: 1,
+      rate: p.selling_price,
+      discount_value: 0
+    });
+    setSearchQuery('');
+    setShowProductDropdown(false);
+    setSelectedSearchIndex(-1);
+  };
+
+  // Add product to bill (from staged bar or direct 1-click)
+  const addProductToBill = (p: Product, customQty: number = 1, customRate?: number, customDiscount: number = 0) => {
+    const qtyToAdd = Number(customQty) > 0 ? Number(customQty) : 1;
+    const rateToUse = customRate !== undefined && customRate >= 0 ? customRate : p.selling_price;
+
     const existingIdx = items.findIndex(i => i.product_id === p.id);
     if (existingIdx >= 0) {
       const updated = [...items];
-      updated[existingIdx].quantity += 1;
+      updated[existingIdx].quantity += qtyToAdd;
+      if (customRate !== undefined) updated[existingIdx].rate = rateToUse;
+      if (customDiscount > 0) updated[existingIdx].discount_value = customDiscount;
       updated[existingIdx] = computeItem(updated[existingIdx], isInterState);
       setItems(updated);
     } else {
@@ -238,12 +403,12 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
         product_name: p.name,
         sku: p.sku,
         hsn_code: p.hsn_code || '5208',
-        category_name: p.category_name || '',
+        category_name: p.category_name || p.category_display_name || '',
         unit: p.unit,
-        quantity: 1,
-        rate: p.selling_price,
+        quantity: qtyToAdd,
+        rate: rateToUse,
         discount_type: 'flat',
-        discount_value: 0,
+        discount_value: customDiscount || 0,
         gst_rate: p.gst_rate,
         is_tax_inclusive: Boolean(p.is_tax_inclusive),
         raw_subtotal: 0,
@@ -260,8 +425,70 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
 
     setSearchQuery('');
     setShowProductDropdown(false);
+    setSelectedSearchIndex(-1);
+    setStagedProduct(null);
     searchInputRef.current?.focus();
   };
+
+  // Confirm staged product addition
+  const handleStagedConfirm = () => {
+    if (!stagedProduct) return;
+    const qty = Number(stagedProduct.quantity);
+    if (qty <= 0 || isNaN(qty)) {
+      alert('Please enter a valid quantity greater than 0');
+      stagedQtyInputRef.current?.focus();
+      return;
+    }
+    addProductToBill(stagedProduct.product, qty, stagedProduct.rate, stagedProduct.discount_value);
+  };
+
+  // Keyboard navigation inside search input
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (searchResults.length > 0) {
+        setShowProductDropdown(true);
+        setSelectedSearchIndex(prev => (prev + 1) % searchResults.length);
+      }
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (searchResults.length > 0) {
+        setShowProductDropdown(true);
+        setSelectedSearchIndex(prev => (prev <= 0 ? searchResults.length - 1 : prev - 1));
+      }
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (showProductDropdown && selectedSearchIndex >= 0 && searchResults[selectedSearchIndex]) {
+        stageProduct(searchResults[selectedSearchIndex]);
+      } else if (searchResults.length === 1) {
+        stageProduct(searchResults[0]);
+      } else if (searchResults.length === 0 && searchQuery.trim().length > 0) {
+        openQuickAddModal(searchQuery.trim());
+      }
+    } else if (e.key === 'Escape') {
+      setShowProductDropdown(false);
+      setSelectedSearchIndex(-1);
+    }
+  };
+
+  // Search customers by phone or name
+  useEffect(() => {
+    if (!customerQuery.trim()) {
+      setCustomerResults([]);
+      return;
+    }
+    const timer = setTimeout(() => {
+      api.get(`/billing/search-customers?q=${encodeURIComponent(customerQuery)}`)
+        .then(res => {
+          setCustomerResults(res.data);
+          setShowCustomerDropdown(true);
+        })
+        .catch(console.error);
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [customerQuery]);
+
+
 
   // Add custom cloth line item
   const addBlankClothItem = () => {
@@ -576,53 +803,160 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
           </div>
 
           {/* PRODUCT SEARCH & ADD BAR */}
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 shadow-xs">
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
+          <div ref={searchContainerRef} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 shadow-xs space-y-3">
+            {/* Header / Shortcut Hints */}
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Package className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                <span className="text-xs font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider">
+                  Product Name Typing & Fast Search
+                </span>
+              </div>
+              <div className="hidden sm:flex items-center gap-2 text-[11px] text-slate-400 font-mono">
+                <span className="bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-700">F2 Focus</span>
+                <span className="bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-700">↑↓ Navigate</span>
+                <span className="bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-700">↵ Select</span>
+                <span className="bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-700">Esc Close</span>
+              </div>
+            </div>
 
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
               {/* Fast Search input */}
               <div className="relative flex-1">
-                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
                 <input
                   ref={searchInputRef}
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search cloth name, scan barcode, or enter SKU (Press F2)..."
-                  className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-xs sm:text-sm font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                  onKeyDown={handleSearchKeyDown}
+                  placeholder="Type product name (e.g. Silk Saree, Cotton, Shirt), scan barcode, or SKU..."
+                  className="w-full pl-10 pr-20 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-xs sm:text-sm font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-all"
                 />
 
+                {/* Right controls: clear button & spinner */}
+                <div className="absolute right-3 top-2.5 flex items-center gap-1.5">
+                  {isSearchingProduct && (
+                    <div className="w-3.5 h-3.5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+                  )}
+                  {searchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSearchQuery('');
+                        setShowProductDropdown(false);
+                        setSelectedSearchIndex(-1);
+                        searchInputRef.current?.focus();
+                      }}
+                      className="p-1 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-md text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                  <span className="text-[10px] bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-300 px-1.5 py-0.5 rounded font-mono font-semibold">
+                    F2
+                  </span>
+                </div>
+
                 {/* Autocomplete Results Dropdown */}
-                {showProductDropdown && searchResults.length > 0 && (
-                  <div className="absolute left-0 right-0 top-full mt-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl z-40 max-h-72 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-700">
-                    {searchResults.map((p) => (
-                      <div
-                        key={p.id}
-                        onClick={() => addProductToBill(p)}
-                        className="p-3 hover:bg-indigo-50 dark:hover:bg-slate-700/80 cursor-pointer flex items-center justify-between text-xs transition-colors"
-                      >
+                {showProductDropdown && (
+                  <div className="absolute left-0 right-0 top-full mt-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl z-40 max-h-80 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-700">
+                    {searchResults.length > 0 ? (
+                      searchResults.map((p, idx) => {
+                        const isSelected = selectedSearchIndex === idx;
+                        const isLowStock = p.stock_quantity > 0 && p.stock_quantity <= p.min_stock_alert;
+                        const isOutOfStock = p.stock_quantity <= 0;
+
+                        return (
+                          <div
+                            id={`search-result-item-${idx}`}
+                            key={p.id}
+                            onClick={() => stageProduct(p)}
+                            onMouseEnter={() => setSelectedSearchIndex(idx)}
+                            className={`p-3 cursor-pointer flex items-center justify-between text-xs transition-colors ${
+                              isSelected
+                                ? 'bg-indigo-50 dark:bg-indigo-950/70 border-l-4 border-indigo-600'
+                                : 'hover:bg-slate-50 dark:hover:bg-slate-700/50'
+                            }`}
+                          >
+                            <div className="space-y-1 flex-1 min-w-0 pr-4">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-bold text-slate-900 dark:text-white text-sm">
+                                  {p.name}
+                                </span>
+                                {(p.category_name || p.category_display_name) && (
+                                  <span className="bg-slate-100 dark:bg-slate-700 px-2 py-0.5 rounded text-[10px] text-slate-600 dark:text-slate-300 font-medium">
+                                    {p.category_name || p.category_display_name}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2 text-slate-500 text-[11px] font-mono flex-wrap">
+                                <span>SKU: <strong className="text-slate-700 dark:text-slate-300">{p.sku}</strong></span>
+                                {p.hsn_code && <span>• HSN: {p.hsn_code}</span>}
+                                <span
+                                  className={`px-1.5 py-0.5 rounded font-bold ${
+                                    isOutOfStock
+                                      ? 'bg-red-100 dark:bg-red-950/60 text-red-700 dark:text-red-400'
+                                      : isLowStock
+                                      ? 'bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400'
+                                      : 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400'
+                                  }`}
+                                >
+                                  Stock: {p.stock_quantity} {p.unit}
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-3">
+                              <div className="text-right">
+                                <div className="text-sm font-black font-mono text-indigo-600 dark:text-indigo-400">
+                                  ₹{p.selling_price.toLocaleString('en-IN')}
+                                </div>
+                                <span className="text-[10px] text-slate-400">
+                                  {p.is_tax_inclusive ? 'Tax Inclusive' : `+${p.gst_rate}% GST`}
+                                </span>
+                              </div>
+
+                              <button
+                                type="button"
+                                title="Quick Add 1 Unit"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  addProductToBill(p, 1);
+                                }}
+                                className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition-all shadow-xs flex items-center gap-1 active:scale-95"
+                              >
+                                <Plus className="w-3 h-3" />
+                                Add 1
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      // Product Not Found
+                      <div className="p-4 text-center space-y-3">
+                        <div className="inline-flex p-2 rounded-full bg-amber-50 dark:bg-amber-950/50 text-amber-600 dark:text-amber-400">
+                          <AlertCircle className="w-6 h-6" />
+                        </div>
                         <div>
                           <div className="font-bold text-slate-900 dark:text-white text-sm">
-                            {p.name}
+                            Product not found
                           </div>
-                          <div className="flex items-center gap-2 text-slate-500 text-[11px] font-mono mt-0.5">
-                            <span>SKU: {p.sku}</span>
-                            <span>HSN: {p.hsn_code}</span>
-                            <span className="bg-slate-100 dark:bg-slate-700 px-1.5 py-0.5 rounded text-slate-700 dark:text-slate-300 font-bold">
-                              Stock: {p.stock_quantity} {p.unit}
-                            </span>
-                          </div>
+                          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                            No textile product matches "<span className="font-semibold text-slate-800 dark:text-slate-200">{searchQuery}</span>"
+                          </p>
                         </div>
-
-                        <div className="text-right">
-                          <div className="text-sm font-black font-mono text-indigo-600 dark:text-indigo-400">
-                            ₹{p.selling_price}
-                          </div>
-                          <span className="text-[10px] text-slate-400">
-                            {p.is_tax_inclusive ? 'Tax Inclusive' : `+${p.gst_rate}% GST`}
-                          </span>
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => openQuickAddModal(searchQuery)}
+                          className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-xs transition-all flex items-center justify-center gap-1.5 mx-auto shadow-md shadow-indigo-600/20 active:scale-95 cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          Quick Add "{searchQuery}" to Products (↵ Enter)
+                        </button>
                       </div>
-                    ))}
+                    )}
                   </div>
                 )}
               </div>
@@ -631,13 +965,126 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
               <button
                 type="button"
                 onClick={addBlankClothItem}
-                className="px-3.5 py-2.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap"
+                className="px-3.5 py-2.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer"
               >
                 <Plus className="w-3.5 h-3.5" />
                 Add Custom Cloth Line
               </button>
-
             </div>
+
+            {/* STAGED PRODUCT ENTRY BAR (Instant Quantity & Rate Input) */}
+            {stagedProduct && (
+              <div className="bg-indigo-50/70 dark:bg-indigo-950/40 border-2 border-indigo-500 dark:border-indigo-500/80 rounded-xl p-3.5 space-y-3 animate-in fade-in slide-in-from-top-2 duration-150 shadow-md shadow-indigo-500/10">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-indigo-600 text-white">
+                      Selected Item
+                    </span>
+                    <span className="font-extrabold text-slate-900 dark:text-white text-sm sm:text-base">
+                      {stagedProduct.product.name}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setStagedProduct(null);
+                      searchInputRef.current?.focus();
+                    }}
+                    className="p-1 hover:bg-indigo-200/50 dark:hover:bg-indigo-900/50 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-xs font-medium flex items-center gap-1"
+                  >
+                    <X className="w-4 h-4" />
+                    <span>Cancel (Esc)</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-6 gap-3 items-end">
+                  {/* SKU & Category Info */}
+                  <div>
+                    <label className="block text-[11px] text-slate-500 font-semibold mb-1">Product Code / SKU</label>
+                    <div className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-mono font-bold text-slate-800 dark:text-slate-200">
+                      {stagedProduct.product.sku}
+                    </div>
+                  </div>
+
+                  {/* Available Stock */}
+                  <div>
+                    <label className="block text-[11px] text-slate-500 font-semibold mb-1">Available Stock</label>
+                    <div className={`px-2.5 py-1.5 rounded-lg border text-xs font-bold ${
+                      stagedProduct.product.stock_quantity <= 0
+                        ? 'bg-red-50 dark:bg-red-950/50 border-red-200 text-red-700 dark:text-red-300'
+                        : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-emerald-600 dark:text-emerald-400 font-mono'
+                    }`}>
+                      {stagedProduct.product.stock_quantity} {stagedProduct.product.unit}
+                    </div>
+                  </div>
+
+                  {/* Selling Rate (₹) */}
+                  <div>
+                    <label className="block text-[11px] text-slate-500 font-semibold mb-1">
+                      Selling Price (₹/{stagedProduct.product.unit})
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={stagedProduct.rate}
+                      onChange={(e) => setStagedProduct({ ...stagedProduct, rate: parseFloat(e.target.value) || 0 })}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') handleStagedConfirm();
+                        else if (e.key === 'Escape') {
+                          setStagedProduct(null);
+                          searchInputRef.current?.focus();
+                        }
+                      }}
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-xs font-mono font-bold text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                    />
+                  </div>
+
+                  {/* Quantity to Add */}
+                  <div>
+                    <label className="block text-[11px] text-indigo-700 dark:text-indigo-300 font-black mb-1">
+                      Quantity ({stagedProduct.product.unit}) *
+                    </label>
+                    <input
+                      ref={stagedQtyInputRef}
+                      type="number"
+                      min="0.01"
+                      step="any"
+                      value={stagedProduct.quantity}
+                      onChange={(e) => setStagedProduct({ ...stagedProduct, quantity: parseFloat(e.target.value) || 0 })}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') handleStagedConfirm();
+                        else if (e.key === 'Escape') {
+                          setStagedProduct(null);
+                          searchInputRef.current?.focus();
+                        }
+                      }}
+                      className="w-full px-3 py-1.5 rounded-lg bg-white dark:bg-slate-800 border-2 border-indigo-600 text-slate-950 dark:text-white text-sm font-black text-right focus:outline-none shadow-sm"
+                    />
+                  </div>
+
+                  {/* Line Total Preview */}
+                  <div>
+                    <label className="block text-[11px] text-slate-500 font-semibold mb-1">Line Amount</label>
+                    <div className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-right text-xs font-mono font-black text-slate-900 dark:text-white">
+                      ₹{Math.round((stagedProduct.quantity * stagedProduct.rate * (stagedProduct.product.is_tax_inclusive ? 1 : (1 + stagedProduct.product.gst_rate / 100))) * 100) / 100}
+                    </div>
+                  </div>
+
+                  {/* Confirm Button */}
+                  <div>
+                    <button
+                      type="button"
+                      onClick={handleStagedConfirm}
+                      className="w-full py-2 px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-lg text-xs transition-all shadow-md shadow-emerald-600/20 flex items-center justify-center gap-1.5 cursor-pointer active:scale-95"
+                    >
+                      <Check className="w-4 h-4" />
+                      Add to Bill (↵)
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* INVOICE ITEMS TABLE */}
@@ -725,11 +1172,17 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
                         <td className="py-2 px-2 text-right">
                           <input
                             type="number"
-                            min="0.1"
+                            min="0.01"
                             step="any"
                             value={item.quantity}
                             onChange={(e) => updateItem(idx, { quantity: parseFloat(e.target.value) || 0 })}
-                            className="w-14 text-right font-bold text-slate-950 dark:text-white border border-slate-200 dark:border-slate-700 rounded px-1.5 py-0.5 bg-white dark:bg-slate-800"
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                searchInputRef.current?.focus();
+                              }
+                            }}
+                            className="w-16 text-right font-bold text-slate-950 dark:text-white border border-slate-200 dark:border-slate-700 rounded px-1.5 py-0.5 bg-white dark:bg-slate-800 focus:ring-1 focus:ring-indigo-500"
                           />
                         </td>
 
@@ -741,7 +1194,13 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
                             step="any"
                             value={item.rate}
                             onChange={(e) => updateItem(idx, { rate: parseFloat(e.target.value) || 0 })}
-                            className="w-16 text-right font-mono font-medium text-slate-900 dark:text-white border border-slate-200 dark:border-slate-700 rounded px-1.5 py-0.5 bg-white dark:bg-slate-800"
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                searchInputRef.current?.focus();
+                              }
+                            }}
+                            className="w-18 text-right font-mono font-medium text-slate-900 dark:text-white border border-slate-200 dark:border-slate-700 rounded px-1.5 py-0.5 bg-white dark:bg-slate-800 focus:ring-1 focus:ring-indigo-500"
                           />
                         </td>
 
@@ -753,7 +1212,13 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
                             step="any"
                             value={item.discount_value}
                             onChange={(e) => updateItem(idx, { discount_value: parseFloat(e.target.value) || 0 })}
-                            className="w-14 text-right font-mono text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 rounded px-1 py-0.5 bg-white dark:bg-slate-800"
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                searchInputRef.current?.focus();
+                              }
+                            }}
+                            className="w-14 text-right font-mono text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 rounded px-1 py-0.5 bg-white dark:bg-slate-800 focus:ring-1 focus:ring-indigo-500"
                           />
                         </td>
 
@@ -1101,6 +1566,224 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
         </div>
 
       </div>
+
+      {/* QUICK ADD PRODUCT MODAL (Product Not Found) */}
+      {showQuickAddModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            {/* Modal Header */}
+            <div className="p-4 bg-indigo-600 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Package className="w-5 h-5" />
+                <div>
+                  <h3 className="font-extrabold text-sm sm:text-base">Quick Add Product to Inventory</h3>
+                  <p className="text-[11px] text-indigo-100">Saves to database and automatically adds to current bill</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowQuickAddModal(false)}
+                className="p-1 hover:bg-indigo-700 rounded-lg text-indigo-100 hover:text-white transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body / Form */}
+            <form onSubmit={handleQuickAddSubmit} className="p-5 space-y-4 text-xs">
+              {quickAddError && (
+                <div className="p-3 bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 rounded-xl flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{quickAddError}</span>
+                </div>
+              )}
+
+              <div className="space-y-3">
+                {/* Product Name */}
+                <div>
+                  <label className="block text-slate-700 dark:text-slate-300 font-bold mb-1">
+                    Product / Cloth Name *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={quickAddName}
+                    onChange={(e) => setQuickAddName(e.target.value)}
+                    placeholder="e.g. Linen Cotton Shirt, Pure Silk Saree..."
+                    className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-medium text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  {/* Category */}
+                  <div>
+                    <label className="block text-slate-700 dark:text-slate-300 font-bold mb-1">
+                      Category
+                    </label>
+                    <select
+                      value={quickAddCategoryId}
+                      onChange={(e) => {
+                        const val = e.target.value ? Number(e.target.value) : '';
+                        setQuickAddCategoryId(val);
+                        const matchedCat = categories.find(c => c.id === val);
+                        if (matchedCat) {
+                          if (matchedCat.hsn_default) setQuickAddHsn(matchedCat.hsn_default);
+                          if (matchedCat.gst_default) setQuickAddGstRate(matchedCat.gst_default);
+                        }
+                      }}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                    >
+                      <option value="">-- Select Category --</option>
+                      {categories.map(c => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* SKU */}
+                  <div>
+                    <label className="block text-slate-700 dark:text-slate-300 font-bold mb-1">
+                      Product Code / SKU *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={quickAddSku}
+                      onChange={(e) => setQuickAddSku(e.target.value.toUpperCase())}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono uppercase font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                  {/* Unit */}
+                  <div>
+                    <label className="block text-slate-700 dark:text-slate-300 font-bold mb-1">
+                      Unit of Measure *
+                    </label>
+                    <select
+                      value={quickAddUnit}
+                      onChange={(e) => setQuickAddUnit(e.target.value as TextileUnit)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                    >
+                      {TEXTILE_UNITS.map(u => (
+                        <option key={u} value={u}>{u}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* HSN Code */}
+                  <div>
+                    <label className="block text-slate-700 dark:text-slate-300 font-bold mb-1">
+                      HSN Code *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={quickAddHsn}
+                      onChange={(e) => setQuickAddHsn(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                    />
+                  </div>
+
+                  {/* GST Rate */}
+                  <div>
+                    <label className="block text-slate-700 dark:text-slate-300 font-bold mb-1">
+                      GST Rate *
+                    </label>
+                    <select
+                      value={quickAddGstRate}
+                      onChange={(e) => setQuickAddGstRate(Number(e.target.value))}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                    >
+                      {GST_SLABS.map(s => (
+                        <option key={s} value={s}>{s}% GST</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                  {/* Selling Price */}
+                  <div>
+                    <label className="block text-indigo-700 dark:text-indigo-400 font-extrabold mb-1">
+                      Selling Price (₹) *
+                    </label>
+                    <input
+                      ref={quickAddPriceInputRef}
+                      type="number"
+                      required
+                      min="0"
+                      step="any"
+                      placeholder="0.00"
+                      value={quickAddSellingPrice}
+                      onChange={(e) => setQuickAddSellingPrice(e.target.value === '' ? '' : parseFloat(e.target.value))}
+                      className="w-full px-3 py-2 rounded-xl border-2 border-indigo-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono font-black text-sm focus:outline-none"
+                    />
+                  </div>
+
+                  {/* Purchase Price */}
+                  <div>
+                    <label className="block text-slate-700 dark:text-slate-300 font-bold mb-1">
+                      Cost / Purchase (₹)
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      placeholder="0.00"
+                      value={quickAddPurchasePrice}
+                      onChange={(e) => setQuickAddPurchasePrice(e.target.value === '' ? '' : parseFloat(e.target.value))}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                    />
+                  </div>
+
+                  {/* Initial Stock */}
+                  <div>
+                    <label className="block text-slate-700 dark:text-slate-300 font-bold mb-1">
+                      Initial Stock Qty *
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={quickAddStock}
+                      onChange={(e) => setQuickAddStock(parseFloat(e.target.value) || 0)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-end gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setShowQuickAddModal(false)}
+                  className="px-4 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl font-bold cursor-pointer transition-colors"
+                >
+                  Cancel (Esc)
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={quickAddSaving}
+                  className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl font-black shadow-md shadow-indigo-600/20 flex items-center gap-2 cursor-pointer transition-all active:scale-95"
+                >
+                  {quickAddSaving ? (
+                    <span>Saving...</span>
+                  ) : (
+                    <>
+                      <Check className="w-4 h-4" />
+                      <span>Save & Add to Bill (↵)</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
     </div>
   );
