@@ -19,7 +19,7 @@ import {
   History,
   Trash2
 } from 'lucide-react';
-import api from '../services/api';
+import api, { generateIdempotencyKey } from '../services/api';
 import { Supplier, PurchaseInvoice, PurchaseItem, Product, TextileUnit } from '../types';
 
 export const PurchasesPage: React.FC = () => {
@@ -219,6 +219,10 @@ export const PurchasesPage: React.FC = () => {
         payment_method: payMethod,
         reference_number: payRef,
         notes: payNotes
+      }, {
+        headers: {
+          'Idempotency-Key': generateIdempotencyKey()
+        }
       });
       setFeedbackMsg({ type: 'success', text: `Payment of ₹${payAmount} recorded for ${paySupplier.name}.` });
       setPaySupplier(null);
@@ -373,7 +377,11 @@ export const PurchasesPage: React.FC = () => {
         items: purchaseForm.items
       };
 
-      await api.post('/purchases', payload);
+      await api.post('/purchases', payload, {
+        headers: {
+          'Idempotency-Key': generateIdempotencyKey()
+        }
+      });
       setFeedbackMsg({ type: 'success', text: `Purchase invoice ${payload.purchase_invoice_number} saved. Stock inward updated automatically!` });
       setShowPurchaseModal(false);
       fetchData();

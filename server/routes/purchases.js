@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../database');
-const { requireAuth, requireAdmin } = require('../middleware/auth');
+const { requireAuth, requireAdmin, requireManagerOrAdmin, idempotency } = require('../middleware/auth');
 const { logAudit } = require('../services/auditService');
 
 // Get all purchase invoices
@@ -75,7 +75,7 @@ router.get('/:id', (req, res) => {
 });
 
 // Create purchase invoice & stock inward
-router.post('/', requireAuth, (req, res) => {
+router.post('/', requireManagerOrAdmin, idempotency, (req, res) => {
   const {
     purchase_invoice_number,
     purchase_date,

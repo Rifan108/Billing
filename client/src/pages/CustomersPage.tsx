@@ -17,7 +17,7 @@ import {
   FileText,
   X
 } from 'lucide-react';
-import api from '../services/api';
+import api, { generateIdempotencyKey } from '../services/api';
 import { Customer, Invoice, CustomerLedgerEntry, CustomerPaymentReceipt } from '../types';
 
 interface CustomersPageProps {
@@ -314,13 +314,17 @@ export const CustomersPage: React.FC<CustomersPageProps> = ({ onViewInvoice }) =
 
   // Settle Balance
   const handleSettle = async () => {
-    if (!settleCustomer || settleAmount <= 0) return;
+    if (saving || !settleCustomer || settleAmount <= 0) return;
     setSaving(true);
     try {
       const res = await api.post(`/customers/${settleCustomer.id}/payment`, {
         amount: settleAmount,
         payment_method: settleMethod,
         reference_number: settleRef
+      }, {
+        headers: {
+          'Idempotency-Key': generateIdempotencyKey()
+        }
       });
       setMsg({ type: 'success', text: `Payment of ₹${settleAmount} credited successfully.` });
       if (res.data?.receipt) {

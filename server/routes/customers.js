@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../database');
-const { requireAuth } = require('../middleware/auth');
+const { requireAuth, idempotency } = require('../middleware/auth');
 const { logAudit } = require('../services/auditService');
 
 // Get all customers with search and outstanding filter
@@ -244,7 +244,7 @@ router.get('/:id/ledger', (req, res) => {
 });
 
 // Record customer outstanding settlement payment
-router.post('/:id/payment', requireAuth, (req, res) => {
+router.post('/:id/payment', requireAuth, idempotency, (req, res) => {
   const { id } = req.params;
   const { amount, payment_method, reference_number, notes } = req.body;
 

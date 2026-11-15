@@ -18,6 +18,8 @@ import { ExpensesPage } from './pages/ExpensesPage';
 import { UsersPage } from './pages/UsersPage';
 import { ShopSettingsPage } from './pages/ShopSettingsPage';
 import { PrintableInvoice } from './components/billing/PrintableInvoice';
+import { ErrorBoundary } from './components/common/ErrorBoundary';
+import { NetworkStatusBanner } from './components/common/NetworkStatusBanner';
 import { Invoice } from './types';
 import api from './services/api';
 
@@ -48,11 +50,14 @@ const MainApp: React.FC = () => {
   }
 
   if (!user) {
-    return <LoginPage />;
+    return (
+      <ErrorBoundary fallbackTitle="Authentication Page Error">
+        <LoginPage />
+      </ErrorBoundary>
+    );
   }
 
   const handleOpenInvoice = (inv: Invoice, autoPrint = false) => {
-    // If inv doesn't have items or shop, fetch full invoice
     if (!inv.items || !inv.shop) {
       api.get(`/invoices/${inv.id}`).then(res => {
         setActiveInvoice(res.data);
@@ -71,6 +76,8 @@ const MainApp: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors">
+      {/* Offline / Online Network Connectivity Indicator */}
+      <NetworkStatusBanner />
 
       {/* Top Navigation */}
       <Navbar
@@ -81,98 +88,101 @@ const MainApp: React.FC = () => {
 
       {/* Main Workspace with Sidebar */}
       <div className="flex flex-1 overflow-hidden">
-
         {/* Navigation Sidebar */}
         <Sidebar
           activeTab={activeTab}
           onNavigate={setActiveTab}
         />
 
-        {/* Content Viewport */}
+        {/* Content Viewport with Error Boundary */}
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full">
-          {activeTab === 'dashboard' && (
-            <DashboardPage
-              onNavigate={setActiveTab}
-              onViewInvoice={handleOpenInvoice}
-            />
-          )}
+          <ErrorBoundary fallbackTitle={`Error Loading ${activeTab.toUpperCase()}`}>
+            {activeTab === 'dashboard' && (
+              <DashboardPage
+                onNavigate={setActiveTab}
+                onViewInvoice={handleOpenInvoice}
+              />
+            )}
 
-          {activeTab === 'billing' && (
-            <BillingPage
-              onInvoiceCreated={handleInvoiceCreated}
-            />
-          )}
+            {activeTab === 'billing' && (
+              <BillingPage
+                onInvoiceCreated={handleInvoiceCreated}
+              />
+            )}
 
-          {activeTab === 'history' && (
-            <BillingHistoryPage
-              onViewInvoice={handleOpenInvoice}
-            />
-          )}
+            {activeTab === 'history' && (
+              <BillingHistoryPage
+                onViewInvoice={handleOpenInvoice}
+              />
+            )}
 
-          {activeTab === 'returns' && (
-            <ReturnsPage />
-          )}
+            {activeTab === 'returns' && (
+              <ReturnsPage />
+            )}
 
-          {activeTab === 'products' && (
-            <ProductsPage />
-          )}
+            {activeTab === 'products' && (
+              <ProductsPage />
+            )}
 
-          {activeTab === 'purchases' && (
-            <PurchasesPage />
-          )}
+            {activeTab === 'purchases' && (
+              <PurchasesPage />
+            )}
 
-          {activeTab === 'customers' && (
-            <CustomersPage
-              onViewInvoice={handleOpenInvoice}
-            />
-          )}
+            {activeTab === 'customers' && (
+              <CustomersPage
+                onViewInvoice={handleOpenInvoice}
+              />
+            )}
 
-          {activeTab === 'gst' && (
-            <GstReportsPage />
-          )}
+            {activeTab === 'gst' && (
+              <GstReportsPage />
+            )}
 
-          {activeTab === 'analytics' && (
-            <SalesAnalyticsPage />
-          )}
+            {activeTab === 'analytics' && (
+              <SalesAnalyticsPage />
+            )}
 
-          {activeTab === 'payments' && (
-            <PaymentsPage />
-          )}
+            {activeTab === 'payments' && (
+              <PaymentsPage />
+            )}
 
-          {activeTab === 'expenses' && (
-            <ExpensesPage />
-          )}
+            {activeTab === 'expenses' && (
+              <ExpensesPage />
+            )}
 
-          {activeTab === 'users' && isAdmin && (
-            <UsersPage />
-          )}
+            {activeTab === 'users' && isAdmin && (
+              <UsersPage />
+            )}
 
-          {activeTab === 'settings' && isAdmin && (
-            <ShopSettingsPage />
-          )}
+            {activeTab === 'settings' && isAdmin && (
+              <ShopSettingsPage />
+            )}
+          </ErrorBoundary>
         </main>
-
       </div>
 
       {/* PRINTABLE BILL MODAL (PORTRAIT 3:4 ASPECT RATIO) */}
       {activeInvoice && (
-        <PrintableInvoice
-          invoice={activeInvoice}
-          autoPrint={autoPrintActiveInvoice}
-          onClose={() => setActiveInvoice(null)}
-        />
+        <ErrorBoundary fallbackTitle="Print Preview Error">
+          <PrintableInvoice
+            invoice={activeInvoice}
+            autoPrint={autoPrintActiveInvoice}
+            onClose={() => setActiveInvoice(null)}
+          />
+        </ErrorBoundary>
       )}
-
     </div>
   );
 };
 
 export default function App() {
   return (
-    <ThemeProvider>
-      <AuthProvider>
-        <MainApp />
-      </AuthProvider>
-    </ThemeProvider>
+    <ErrorBoundary fallbackTitle="Application Initialization Error">
+      <ThemeProvider>
+        <AuthProvider>
+          <MainApp />
+        </AuthProvider>
+      </ThemeProvider>
+    </ErrorBoundary>
   );
 }

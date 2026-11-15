@@ -15,7 +15,7 @@ import {
   X,
   Layers
 } from 'lucide-react';
-import api from '../services/api';
+import api, { generateIdempotencyKey } from '../services/api';
 import { ReturnTransaction, ReturnItem, Invoice, Product } from '../types';
 
 export const ReturnsPage: React.FC = () => {
@@ -176,6 +176,7 @@ export const ReturnsPage: React.FC = () => {
 
   // Process Return / Exchange
   const handleProcessReturn = async () => {
+    if (submitting) return; // Strict double-click prevention
     if (!originalInvoice) return;
     if (itemsToReturnList.length === 0) {
       alert('Please select at least one product to return.');
@@ -209,7 +210,11 @@ export const ReturnsPage: React.FC = () => {
         notes
       };
 
-      const res = await api.post('/returns', payload);
+      const res = await api.post('/returns', payload, {
+        headers: {
+          'Idempotency-Key': generateIdempotencyKey()
+        }
+      });
       setFeedbackMsg({ type: 'success', text: `Return ${res.data.return_number} processed successfully!` });
       setActiveReceipt(res.data);
       // Reset new return form

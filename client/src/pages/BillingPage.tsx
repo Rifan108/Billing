@@ -20,7 +20,7 @@ import {
   CheckCircle2,
   Barcode
 } from 'lucide-react';
-import api from '../services/api';
+import api, { generateIdempotencyKey } from '../services/api';
 import { Product, Customer, ShopSettings, TextileUnit, PaymentMethod, Invoice, Category } from '../types';
 
 interface BillingPageProps {
@@ -708,6 +708,7 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
 
   // Submit Invoice to Backend
   const handleGenerateInvoice = async (printDirectly = true) => {
+    if (submitting) return; // Strict double-click prevention
     if (items.length === 0) {
       setError('Please add at least one cloth item to the bill.');
       return;
@@ -748,7 +749,11 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
         notes
       };
 
-      const res = await api.post('/billing/create-invoice', payload);
+      const res = await api.post('/billing/create-invoice', payload, {
+        headers: {
+          'Idempotency-Key': generateIdempotencyKey()
+        }
+      });
 
       // Clear bill
       setItems([]);

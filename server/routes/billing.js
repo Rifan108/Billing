@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../database');
-const { requireAuth } = require('../middleware/auth');
+const { requireAuth, idempotency } = require('../middleware/auth');
 const { calculateInvoiceTotals, numberToWordsINR, getStateByName } = require('../services/gstEngine');
 const { logAudit } = require('../services/auditService');
 
@@ -162,7 +162,7 @@ router.get('/search-customers', (req, res) => {
 });
 
 // Create new invoice with full atomic transaction
-router.post('/create-invoice', requireAuth, (req, res) => {
+router.post('/create-invoice', requireAuth, idempotency, (req, res) => {
   const {
     customer_id,
     customer_name,

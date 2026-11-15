@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../database');
-const { requireAuth, requireAdmin } = require('../middleware/auth');
+const { requireAuth, requireAdmin, idempotency } = require('../middleware/auth');
 const { logAudit } = require('../services/auditService');
 
 // List all returns and exchanges
@@ -397,8 +397,8 @@ const handleProcessReturn = (req, res) => {
   });
 };
 
-router.post('/', requireAuth, handleProcessReturn);
-router.post('/process', requireAuth, handleProcessReturn);
+router.post('/', requireAuth, idempotency, handleProcessReturn);
+router.post('/process', requireAuth, idempotency, handleProcessReturn);
 
 // Get single return details for receipt printing
 router.get('/:id', (req, res) => {

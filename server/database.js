@@ -492,6 +492,104 @@ function initDatabase() {
     db.exec("ALTER TABLE invoices ADD COLUMN whatsapp_sent_at TEXT");
   }
 
+  // Security and Account Hardening Migrations for Users
+  const userSqlRow = db.prepare("SELECT sql FROM sqlite_master WHERE name = 'users'").get();
+  const userSql = userSqlRow ? userSqlRow.sql : '';
+  if (userSql && !userSql.includes("'manager'")) {
+    db.pragma('foreign_keys = OFF');
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE users_temp (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          username TEXT UNIQUE NOT NULL,
+          password_hash TEXT NOT NULL,
+          full_name TEXT NOT NULL,
+          role TEXT NOT NULL CHECK(role IN ('admin', 'manager', 'cashier', 'staff')),
+          phone TEXT,
+          status TEXT DEFAULT 'active' CHECK(status IN ('active', 'inactive')),
+          token_version INTEGER DEFAULT 1,
+          failed_login_attempts INTEGER DEFAULT 0,
+          lockout_until TEXT,
+          last_login_at TEXT,
+          last_login_ip TEXT,
+          password_changed_at TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO users_temp (id, username, password_hash, full_name, role, phone, status, created_at, updated_at)
+        SELECT id, username, password_hash, full_name, role, phone, status, created_at, updated_at FROM users;
+        DROP TABLE users;
+        ALTER TABLE users_temp RENAME TO users;
+      `);
+    })();
+    db.pragma('foreign_keys = ON');
+  }
+
+  const userCols = db.prepare('PRAGMA table_info(users)').all().map(c => c.name);
+  if (!userCols.includes('token_version')) {
+    db.exec("ALTER TABLE users ADD COLUMN token_version INTEGER DEFAULT 1");
+  }
+  if (!userCols.includes('failed_login_attempts')) {
+    db.exec("ALTER TABLE users ADD COLUMN failed_login_attempts INTEGER DEFAULT 0");
+  }
+  if (!userCols.includes('lockout_until')) {
+    db.exec("ALTER TABLE users ADD COLUMN lockout_until TEXT");
+  }
+  if (!userCols.includes('last_login_at')) {
+    db.exec("ALTER TABLE users ADD COLUMN last_login_at TEXT");
+  }
+  if (!userCols.includes('last_login_ip')) {
+    db.exec("ALTER TABLE users ADD COLUMN last_login_ip TEXT");
+  }
+  if (!userCols.includes('password_changed_at')) {
+    db.exec("ALTER TABLE users ADD COLUMN password_changed_at TEXT");
+  }
+
+  // Create login_history table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS login_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER REFERENCES users(id),
+      username TEXT NOT NULL,
+      ip_address TEXT,
+      user_agent TEXT,
+      status TEXT NOT NULL CHECK(status IN ('success', 'failed', 'locked')),
+      failure_reason TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_login_history_user ON login_history(user_id);
+    CREATE INDEX IF NOT EXISTS idx_login_history_created ON login_history(created_at);
+  `);
+
+  // Create idempotency_keys table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS idempotency_keys (
+      key TEXT PRIMARY KEY,
+      request_path TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      response_status INTEGER NOT NULL,
+      response_body TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_idempotency_created ON idempotency_keys(created_at);
+  `);
+
+  // Backups checksum column
+  const backupCols = db.prepare('PRAGMA table_info(backups)').all().map(c => c.name);
+  if (!backupCols.includes('checksum')) {
+    db.exec("ALTER TABLE backups ADD COLUMN checksum TEXT");
+  }
+
+  // Relational indices for performance & integrity
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_payments_invoice ON payments(invoice_id);
+    CREATE INDEX IF NOT EXISTS idx_payments_customer ON payments(customer_id);
+    CREATE INDEX IF NOT EXISTS idx_refunds_invoice ON refunds(invoice_id);
+    CREATE INDEX IF NOT EXISTS idx_return_items_return ON return_items(return_id);
+    CREATE INDEX IF NOT EXISTS idx_purchase_items_purchase ON purchase_items(purchase_id);
+    CREATE INDEX IF NOT EXISTS idx_supplier_payments_supplier ON supplier_payments(supplier_id);
+  `);
+
   seedInitialData();
 }
 

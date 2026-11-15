@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../database');
-const { requireAuth, requireAdmin } = require('../middleware/auth');
+const { requireAuth, requireAdmin, requireManagerOrAdmin } = require('../middleware/auth');
 const { numberToWordsINR } = require('../services/gstEngine');
 const { logAudit } = require('../services/auditService');
 
@@ -168,8 +168,8 @@ router.get('/:id', (req, res) => {
   });
 });
 
-// Cancel Invoice (Admin only or staff with permission)
-router.post('/:id/cancel', requireAuth, (req, res) => {
+// Cancel Invoice (Manager or Admin)
+router.post('/:id/cancel', requireManagerOrAdmin, (req, res) => {
   const { id } = req.params;
   const { reason, restore_stock = true } = req.body;
 
@@ -255,8 +255,8 @@ router.post('/:id/cancel', requireAuth, (req, res) => {
   });
 });
 
-// Process Refund / Credit Note
-router.post('/:id/refund', requireAuth, (req, res) => {
+// Process Refund / Credit Note (Manager or Admin)
+router.post('/:id/refund', requireManagerOrAdmin, (req, res) => {
   const { id } = req.params;
   const {
     refund_type = 'full', // 'full' or 'partial'
