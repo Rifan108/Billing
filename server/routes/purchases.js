@@ -349,10 +349,16 @@ router.post('/:id/cancel', requireAdmin, (req, res) => {
       db.prepare(`
         UPDATE suppliers
         SET total_purchases = max(0, total_purchases - ?),
+            total_paid = max(0, total_paid - ?),
             outstanding_balance = max(0, outstanding_balance - ?),
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
-      `).run(purchase.grandTotal || purchase.grand_total, purchase.balanceDue || purchase.balance_due, purchase.supplier_id);
+      `).run(
+        purchase.grand_total || 0,
+        purchase.amount_paid || 0,
+        purchase.balance_due || 0,
+        purchase.supplier_id
+      );
     }
   });
 

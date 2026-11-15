@@ -42,18 +42,39 @@ router.get('/metrics', (req, res) => {
     FROM customers
   `).get();
 
-  // 4. Total Inventory Value (at cost and at retail selling price)
-  const inventoryStats = db.prepare(`
+  // 4. Total Inventory Value (standalone products + variants)
+  const baseInv = db.prepare(`
     SELECT
       count(*) as total_active_products,
-      coalesce(sum(stock_quantity), 0) as total_stock_units,
-      coalesce(sum(stock_quantity * purchase_price), 0) as inventory_cost_value,
-      coalesce(sum(stock_quantity * selling_price), 0) as inventory_retail_value,
-      count(case when stock_quantity <= 0 then 1 end) as out_of_stock_count,
-      count(case when stock_quantity > 0 and stock_quantity <= min_stock_alert then 1 end) as low_stock_count
+      coalesce(sum(case when has_variants = 0 then stock_quantity else 0 end), 0) as prod_stock_units,
+      coalesce(sum(case when has_variants = 0 then stock_quantity * purchase_price else 0 end), 0) as prod_cost_value,
+      coalesce(sum(case when has_variants = 0 then stock_quantity * selling_price else 0 end), 0) as prod_retail_value,
+      count(case when has_variants = 0 and stock_quantity <= 0 then 1 end) as prod_out_of_stock,
+      count(case when has_variants = 0 and stock_quantity > 0 and stock_quantity <= min_stock_alert then 1 end) as prod_low_stock
     FROM products
     WHERE status = 'active'
   `).get();
+
+  const varInv = db.prepare(`
+    SELECT
+      count(*) as total_active_variants,
+      coalesce(sum(stock_quantity), 0) as var_stock_units,
+      coalesce(sum(stock_quantity * purchase_price), 0) as var_cost_value,
+      coalesce(sum(stock_quantity * selling_price), 0) as var_retail_value,
+      count(case when stock_quantity <= 0 then 1 end) as var_out_of_stock,
+      count(case when stock_quantity > 0 and stock_quantity <= min_stock_alert then 1 end) as var_low_stock
+    FROM product_variants
+    WHERE status = 'active'
+  `).get();
+
+  const inventoryStats = {
+    total_active_products: baseInv.total_active_products,
+    total_stock_units: Math.round((baseInv.prod_stock_units + varInv.var_stock_units) * 100) / 100,
+    inventory_cost_value: Math.round((baseInv.prod_cost_value + varInv.var_cost_value) * 100) / 100,
+    inventory_retail_value: Math.round((baseInv.prod_retail_value + varInv.var_retail_value) * 100) / 100,
+    out_of_stock_count: baseInv.prod_out_of_stock + varInv.var_out_of_stock,
+    low_stock_count: baseInv.prod_low_stock + varInv.var_low_stock
+  };
 
   // 5. Daily Sales Overview (last 14 days)
   const dailySales = db.prepare(`

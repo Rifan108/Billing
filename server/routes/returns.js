@@ -143,9 +143,27 @@ const handleProcessReturn = (req, res) => {
 
     const maxReturnable = Math.max(0, Math.round((invItem.quantity - prevReturned) * 100) / 100);
     const rawQty = ret.quantity_returned !== undefined ? ret.quantity_returned : ret.quantity;
-    const returnQty = Math.min(maxReturnable, Math.max(0.01, parseFloat(rawQty) || 0));
+    const requestedQty = parseFloat(rawQty) || 0;
 
-    if (returnQty <= 0) continue;
+    if (maxReturnable <= 0) {
+      return res.status(400).json({
+        error: `Item "${invItem.product_name}" has already been completely returned.`
+      });
+    }
+
+    if (requestedQty <= 0) {
+      return res.status(400).json({
+        error: `Invalid return quantity specified for "${invItem.product_name}".`
+      });
+    }
+
+    if (requestedQty > maxReturnable) {
+      return res.status(400).json({
+        error: `Cannot return ${requestedQty} units of "${invItem.product_name}". Maximum returnable is ${maxReturnable}.`
+      });
+    }
+
+    const returnQty = requestedQty;
 
     // Calculate item refund amount & tax portion proportionally
     const lineFraction = returnQty / invItem.quantity;

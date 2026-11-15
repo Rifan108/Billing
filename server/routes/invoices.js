@@ -199,6 +199,7 @@ router.post('/:id/cancel', requireAuth, (req, res) => {
     // Restore stock if requested
     if (restore_stock) {
       const updateProdStock = db.prepare('UPDATE products SET stock_quantity = stock_quantity + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
+      const updateVarStock = db.prepare('UPDATE product_variants SET stock_quantity = stock_quantity + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
       const insertTxn = db.prepare(`
         INSERT INTO inventory_transactions (
           product_id, product_name, transaction_type, quantity, quantity_before, quantity_after, unit, reference_id, reason, created_by_user_id
@@ -206,6 +207,9 @@ router.post('/:id/cancel', requireAuth, (req, res) => {
       `);
 
       for (const item of items) {
+        if (item.variant_id) {
+          updateVarStock.run(item.quantity, item.variant_id);
+        }
         if (item.product_id) {
           const prod = db.prepare('SELECT stock_quantity, name, unit FROM products WHERE id = ?').get(item.product_id);
           if (prod) {
@@ -214,7 +218,7 @@ router.post('/:id/cancel', requireAuth, (req, res) => {
             updateProdStock.run(item.quantity, item.product_id);
             insertTxn.run(
               item.product_id,
-              prod.name,
+              prod.name + (item.variant_name ? ` (${item.variant_name})` : ''),
               item.quantity,
               qtyBefore,
               qtyAfter,
@@ -355,6 +359,7 @@ router.post('/:id/refund', requireAuth, (req, res) => {
     // Restock items if selected
     if (restock_inventory) {
       const updateStock = db.prepare('UPDATE products SET stock_quantity = stock_quantity + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
+      const updateVarStock = db.prepare('UPDATE product_variants SET stock_quantity = stock_quantity + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
       const insertTxn = db.prepare(`
         INSERT INTO inventory_transactions (
           product_id, product_name, transaction_type, quantity, quantity_before, quantity_after, unit, reference_id, reason, created_by_user_id
@@ -364,27 +369,35 @@ router.post('/:id/refund', requireAuth, (req, res) => {
       if (items_to_return && items_to_return.length > 0) {
         for (const ret of items_to_return) {
           const item = invoiceItems.find(i => i.id === ret.item_id || i.product_id === ret.product_id);
-          if (item && item.product_id) {
+          if (item) {
             const retQty = parseFloat(ret.quantity) || item.quantity;
-            const prod = db.prepare('SELECT stock_quantity, name, unit FROM products WHERE id = ?').get(item.product_id);
-            if (prod) {
-              const qtyBefore = prod.stock_quantity;
-              const qtyAfter = Math.round((qtyBefore + retQty) * 100) / 100;
-              updateStock.run(retQty, item.product_id);
-              insertTxn.run(item.product_id, prod.name, retQty, qtyBefore, qtyAfter, prod.unit, refundNumber, `Restocked from refund ${refundNumber}`, req.user.id);
+            if (item.variant_id) {
+              updateVarStock.run(retQty, item.variant_id);
+            }
+            if (item.product_id) {
+              const prod = db.prepare('SELECT stock_quantity, name, unit FROM products WHERE id = ?').get(item.product_id);
+              if (prod) {
+                const qtyBefore = prod.stock_quantity;
+                const qtyAfter = Math.round((qtyBefore + retQty) * 100) / 100;
+                updateStock.run(retQty, item.product_id);
+                insertTxn.run(item.product_id, prod.name + (item.variant_name ? ` (${item.variant_name})` : ''), retQty, qtyBefore, qtyAfter, prod.unit, refundNumber, `Restocked from refund ${refundNumber}`, req.user.id);
+              }
             }
           }
         }
       } else if (refund_type === 'full') {
         // Restock all items
         for (const item of invoiceItems) {
+          if (item.variant_id) {
+            updateVarStock.run(item.quantity, item.variant_id);
+          }
           if (item.product_id) {
             const prod = db.prepare('SELECT stock_quantity, name, unit FROM products WHERE id = ?').get(item.product_id);
             if (prod) {
               const qtyBefore = prod.stock_quantity;
               const qtyAfter = Math.round((qtyBefore + item.quantity) * 100) / 100;
               updateStock.run(item.quantity, item.product_id);
-              insertTxn.run(item.product_id, prod.name, item.quantity, qtyBefore, qtyAfter, prod.unit, refundNumber, `Full restock from refund ${refundNumber}`, req.user.id);
+              insertTxn.run(item.product_id, prod.name + (item.variant_name ? ` (${item.variant_name})` : ''), item.quantity, qtyBefore, qtyAfter, prod.unit, refundNumber, `Full restock from refund ${refundNumber}`, req.user.id);
             }
           }
         }
@@ -498,7 +511,7 @@ router.get('/:id/whatsapp', requireAuth, (req, res) => {
   if (inputPhone && digits.length === 10) {
     db.prepare('UPDATE invoices SET customer_phone = ? WHERE id = ?').run(digits, id);
     if (invoice.customer_id) {
-      db.prepare('UPDATE customers SET phone = ? WHERE id = ? AND (phone IS NULL OR phone = "")').run(digits, invoice.customer_id);
+      db.prepare("UPDATE customers SET phone = ? WHERE id = ? AND (phone IS NULL OR phone = '')").run(digits, invoice.customer_id);
     }
   }
 

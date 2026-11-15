@@ -156,42 +156,72 @@ router.get('/:id/ledger', (req, res) => {
   // Combine into unified ledger entries
   const entries = [];
 
+  // Track payments per invoice to handle any fallback legacy data
+  const invoicePaymentsMap = {};
+  for (const pay of payments) {
+    if (pay.invoice_id) {
+      invoicePaymentsMap[pay.invoice_id] = (invoicePaymentsMap[pay.invoice_id] || 0) + pay.amount;
+    }
+  }
+
+  // 1. Add all invoices as debits
   for (const inv of invoices) {
     entries.push({
       id: `inv-${inv.id}`,
       type: 'invoice',
       date: inv.invoice_date,
-      time: inv.invoice_time || '',
+      time: inv.invoice_time || '00:00:00',
       reference: inv.invoice_number,
       description: `Sales Bill #${inv.invoice_number} (${inv.total_items_count} items)`,
       debit: inv.grand_total,
-      credit: inv.amount_paid,
-      net_due: inv.balance_due,
+      credit: 0,
+      net_due: inv.grand_total,
       payment_method: inv.payment_method,
       payment_status: inv.payment_status
     });
-  }
 
-  for (const pay of payments) {
-    if (!pay.invoice_id) {
+    // Fallback if an invoice had amount_paid but no row in payments table
+    const recordedInPayments = invoicePaymentsMap[inv.id] || 0;
+    const unrecordedDifference = Math.round((inv.amount_paid - recordedInPayments) * 100) / 100;
+    if (unrecordedDifference > 0) {
       entries.push({
-        id: `pay-${pay.id}`,
+        id: `legacy-pay-${inv.id}`,
         type: 'payment',
-        date: pay.payment_date,
-        time: '',
-        reference: pay.reference_number || `PAY-${pay.id}`,
-        description: `Khata Settlement (${pay.notes || 'Customer payment'})`,
+        date: inv.invoice_date,
+        time: inv.invoice_time || '00:00:01',
+        reference: `PAY-${inv.invoice_number}`,
+        description: `Payment for Bill #${inv.invoice_number} (${(inv.payment_method || 'cash').toUpperCase()})`,
         debit: 0,
-        credit: pay.amount,
+        credit: unrecordedDifference,
         net_due: 0,
-        payment_method: pay.payment_method,
+        payment_method: inv.payment_method,
         payment_status: 'paid'
       });
     }
   }
 
-  // Sort chronological
-  entries.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+  // 2. Add all recorded payments as credits
+  for (const pay of payments) {
+    const payTime = pay.created_at ? (pay.created_at.split(' ')[1] || '12:00:00') : '12:00:00';
+    entries.push({
+      id: `pay-${pay.id}`,
+      type: 'payment',
+      date: pay.payment_date,
+      time: payTime,
+      reference: pay.reference_number || (pay.invoice_number ? `PAY-${pay.invoice_number}` : `RCPT-${pay.id}`),
+      description: pay.invoice_number
+        ? `Payment received for Bill #${pay.invoice_number} (${(pay.payment_method || 'cash').toUpperCase()})`
+        : `Khata Settlement (${pay.notes || (pay.payment_method || 'cash').toUpperCase()})`,
+      debit: 0,
+      credit: pay.amount,
+      net_due: 0,
+      payment_method: pay.payment_method,
+      payment_status: 'paid'
+    });
+  }
+
+  // Sort chronological by date + time
+  entries.sort((a, b) => (a.date + ' ' + a.time).localeCompare(b.date + ' ' + b.time));
 
   // Calculate running balance
   let runningBalance = 0;

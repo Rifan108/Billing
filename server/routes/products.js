@@ -521,13 +521,14 @@ router.delete('/:id', requireAdmin, (req, res) => {
     return res.status(404).json({ error: 'Product not found' });
   }
 
-  // Check if product was billed in invoices
+  // Check if product was billed in invoices or recorded in purchases
   const billedCount = db.prepare('SELECT count(*) as count FROM invoice_items WHERE product_id = ?').get(id).count;
-  if (billedCount > 0) {
-    // Soft delete / mark inactive to preserve invoice history
+  const purchasedCount = db.prepare('SELECT count(*) as count FROM purchase_items WHERE product_id = ?').get(id)?.count || 0;
+  if (billedCount > 0 || purchasedCount > 0) {
+    // Soft delete / mark inactive to preserve invoice and purchase history
     db.prepare("UPDATE products SET status = 'inactive', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
-    logAudit(req.user.id, req.user.full_name, 'PRODUCT_DEACTIVATE', 'products', id, `Deactivated product ${current.name} (has ${billedCount} historic bill lines)`);
-    return res.json({ message: 'Product has historic billing records, so it was safely deactivated instead of deleted.' });
+    logAudit(req.user.id, req.user.full_name, 'PRODUCT_DEACTIVATE', 'products', id, `Deactivated product ${current.name} (has ${billedCount} sales and ${purchasedCount} purchase lines)`);
+    return res.json({ message: 'Product has historic billing or purchase records, so it was safely deactivated instead of deleted.' });
   }
 
   // Hard delete if never billed

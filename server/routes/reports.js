@@ -52,10 +52,11 @@ router.get('/advanced-analytics', (req, res) => {
   // 2. Cost of Goods Sold & Gross Profit
   const cogsData = db.prepare(`
     SELECT
-      coalesce(sum(ii.quantity * coalesce(p.purchase_price, 0)), 0) as total_cost,
+      coalesce(sum(ii.quantity * coalesce(v.purchase_price, p.purchase_price, 0)), 0) as total_cost,
       coalesce(sum(ii.final_amount), 0) as total_rev
     FROM invoice_items ii
     JOIN invoices i ON ii.invoice_id = i.id
+    LEFT JOIN product_variants v ON ii.variant_id = v.id
     LEFT JOIN products p ON ii.product_id = p.id
     WHERE i.status != 'cancelled' AND i.invoice_date BETWEEN ? AND ?
   `).get(rangeStart, rangeEnd);
@@ -82,9 +83,10 @@ router.get('/advanced-analytics', (req, res) => {
       ii.unit,
       coalesce(sum(ii.quantity), 0) as qty_sold,
       coalesce(sum(ii.final_amount), 0) as revenue,
-      coalesce(sum(ii.final_amount - (ii.quantity * coalesce(p.purchase_price, 0))), 0) as item_profit
+      coalesce(sum(ii.final_amount - (ii.quantity * coalesce(v.purchase_price, p.purchase_price, 0))), 0) as item_profit
     FROM invoice_items ii
     JOIN invoices i ON ii.invoice_id = i.id
+    LEFT JOIN product_variants v ON ii.variant_id = v.id
     LEFT JOIN products p ON ii.product_id = p.id
     WHERE i.status != 'cancelled' AND i.invoice_date BETWEEN ? AND ?
     GROUP BY ii.product_name
@@ -145,21 +147,53 @@ router.get('/advanced-analytics', (req, res) => {
     ORDER BY invoice_date ASC
   `).all(rangeStart, rangeEnd);
 
+  const grossSales = salesSummary.gross_sales || 0;
+  const totalCogs = cogsData.total_cost || 0;
+  const grossProfit = estimatedGrossProfit;
+  const grossMarginPct = grossSales > 0 ? Math.round((grossProfit / grossSales) * 1000) / 10 : 0;
+  const netProfit = estimatedNetProfit;
+  const netMarginPct = grossSales > 0 ? Math.round((netProfit / grossSales) * 1000) / 10 : 0;
+
+  const kpiData = {
+    gross_sales: grossSales,
+    net_sales: salesSummary.taxable_sales || 0,
+    total_discount: salesSummary.total_discounts || 0,
+    total_tax: salesSummary.gst_collected || 0,
+    cgst: salesSummary.total_cgst || 0,
+    sgst: salesSummary.total_sgst || 0,
+    igst: salesSummary.total_igst || 0,
+    total_cogs: totalCogs,
+    gross_profit: grossProfit,
+    gross_margin_percent: grossMarginPct,
+    total_expenses: totalExpenses,
+    net_profit: netProfit,
+    net_margin_percent: netMarginPct,
+    active_khata_dues: outstandingData.total_khata_outstanding || 0,
+    invoices_count: salesSummary.total_invoices || 0
+  };
+
   res.json({
     date_range: { start_date: rangeStart, end_date: rangeEnd, preset },
+    kpi: kpiData,
     overview: {
       ...salesSummary,
-      cost_of_goods: cogsData.total_cost,
-      gross_profit: estimatedGrossProfit,
+      cost_of_goods: totalCogs,
+      gross_profit: grossProfit,
       total_expenses: totalExpenses,
-      net_profit: estimatedNetProfit,
+      net_profit: netProfit,
       customer_khata_outstanding: outstandingData.total_khata_outstanding
     },
+    sales: salesSummary,
+    cogs: totalCogs,
+    gross_profit: grossProfit,
+    net_profit: netProfit,
     best_sellers: bestSellers,
     slow_movers: slowMovers,
     categories: categoryBreakdown,
     payments: paymentBreakdown,
-    trends: dailyTrends
+    payment_methods: paymentBreakdown,
+    trends: dailyTrends,
+    daily_trends: dailyTrends
   });
 });
 
