@@ -2,8 +2,10 @@ import React, { useRef, useState, useEffect } from 'react';
 import {
   Printer,
   Download,
-  X
+  X,
+  MessageCircle
 } from 'lucide-react';
+import api from '../../services/api';
 import { Invoice, ShopSettings } from '../../types';
 import {
   ThermalPaperWidth,
@@ -66,6 +68,7 @@ export const PrintableInvoice: React.FC<PrintableInvoiceProps> = ({
   const [qrReady, setQrReady] = useState<boolean>(false);
   const [printing, setPrinting] = useState<boolean>(false);
   const [downloading, setDownloading] = useState<boolean>(false);
+  const [sharingWhatsApp, setSharingWhatsApp] = useState<boolean>(false);
 
   // Remaining payable balance
   const remainingDue = typeof invoice.balance_due === 'number'
@@ -139,6 +142,31 @@ export const PrintableInvoice: React.FC<PrintableInvoiceProps> = ({
     }
   };
 
+  // One-click WhatsApp Invoice Sharing
+  const handleWhatsAppShare = async () => {
+    setSharingWhatsApp(true);
+    try {
+      let phone = invoice.customer_phone || '';
+      if (!phone) {
+        const input = prompt('Enter customer 10-digit mobile number for WhatsApp sharing:');
+        if (!input) {
+          setSharingWhatsApp(false);
+          return;
+        }
+        phone = input.trim();
+      }
+      const res = await api.get(`/invoices/${invoice.id}/whatsapp?phone=${encodeURIComponent(phone)}`);
+      if (res.data?.whatsappUrl) {
+        window.open(res.data.whatsappUrl, '_blank');
+      }
+    } catch (err) {
+      console.error('WhatsApp error:', err);
+      alert('Could not generate WhatsApp share link.');
+    } finally {
+      setSharingWhatsApp(false);
+    }
+  };
+
   const is58mm = paperWidth === '58mm';
   const items = invoice.items || [];
 
@@ -191,6 +219,17 @@ export const PrintableInvoice: React.FC<PrintableInvoiceProps> = ({
         >
           <Download className="w-3.5 h-3.5" />
           {downloading ? 'PDF...' : 'PDF'}
+        </button>
+
+        {/* WhatsApp Share Button */}
+        <button
+          onClick={handleWhatsAppShare}
+          disabled={sharingWhatsApp}
+          className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white font-bold rounded-xl text-xs transition-all shadow-md active:scale-95 cursor-pointer"
+          title="Share invoice summary on WhatsApp"
+        >
+          <MessageCircle className="w-3.5 h-3.5 text-emerald-200" />
+          {sharingWhatsApp ? 'Preparing...' : 'WhatsApp'}
         </button>
 
         {/* Close Button */}
@@ -322,6 +361,11 @@ export const PrintableInvoice: React.FC<PrintableInvoiceProps> = ({
                     {/* Item Name */}
                     <div className="font-bold text-[10px] text-black leading-tight">
                       {item.product_name}
+                      {item.variant_name && (
+                        <span className="font-normal text-[9px] text-slate-700 ml-1">
+                          ({item.variant_name})
+                        </span>
+                      )}
                     </div>
                     {/* Item details row */}
                     <div className="flex justify-between text-[10px] items-baseline">

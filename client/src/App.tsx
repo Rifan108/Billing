@@ -8,6 +8,8 @@ import { DashboardPage } from './pages/DashboardPage';
 import { BillingPage } from './pages/BillingPage';
 import { BillingHistoryPage } from './pages/BillingHistoryPage';
 import { ProductsPage } from './pages/ProductsPage';
+import { PurchasesPage } from './pages/PurchasesPage';
+import { ReturnsPage } from './pages/ReturnsPage';
 import { CustomersPage } from './pages/CustomersPage';
 import { GstReportsPage } from './pages/GstReportsPage';
 import { SalesAnalyticsPage } from './pages/SalesAnalyticsPage';
@@ -107,8 +109,16 @@ const MainApp: React.FC = () => {
             />
           )}
 
+          {activeTab === 'returns' && (
+            <ReturnsPage />
+          )}
+
           {activeTab === 'products' && (
             <ProductsPage />
+          )}
+
+          {activeTab === 'purchases' && (
+            <PurchasesPage />
           )}
 
           {activeTab === 'customers' && (

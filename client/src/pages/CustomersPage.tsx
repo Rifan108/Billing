@@ -11,10 +11,14 @@ import {
   AlertCircle,
   Building,
   CheckCircle2,
-  Calendar
+  Calendar,
+  Printer,
+  Receipt,
+  FileText,
+  X
 } from 'lucide-react';
 import api from '../services/api';
-import { Customer, Invoice } from '../types';
+import { Customer, Invoice, CustomerLedgerEntry, CustomerPaymentReceipt } from '../types';
 
 interface CustomersPageProps {
   onViewInvoice: (inv: Invoice) => void;
@@ -31,6 +35,9 @@ export const CustomersPage: React.FC<CustomersPageProps> = ({ onViewInvoice }) =
   const [customerInvoices, setCustomerInvoices] = useState<any[]>([]);
   const [customerPayments, setCustomerPayments] = useState<any[]>([]);
   const [drawerLoading, setDrawerLoading] = useState(false);
+  const [drawerTab, setDrawerTab] = useState<'ledger' | 'invoices'>('ledger');
+  const [ledgerEntries, setLedgerEntries] = useState<CustomerLedgerEntry[]>([]);
+  const [paymentReceipt, setPaymentReceipt] = useState<CustomerPaymentReceipt | null>(null);
 
   // Add / Edit Customer Modal
   const [showCustomerModal, setShowCustomerModal] = useState(false);
@@ -87,14 +94,168 @@ export const CustomersPage: React.FC<CustomersPageProps> = ({ onViewInvoice }) =
     setSelectedCustomer(c);
     setDrawerLoading(true);
     try {
-      const res = await api.get(`/customers/${c.id}`);
-      setCustomerInvoices(res.data.invoices || []);
-      setCustomerPayments(res.data.payments || []);
+      const [detailRes, ledgerRes] = await Promise.all([
+        api.get(`/customers/${c.id}`),
+        api.get(`/customers/${c.id}/ledger`)
+      ]);
+      setCustomerInvoices(detailRes.data.invoices || []);
+      setCustomerPayments(detailRes.data.payments || []);
+      setLedgerEntries(ledgerRes.data.ledger || []);
     } catch (err) {
       console.error(err);
     } finally {
       setDrawerLoading(false);
     }
+  };
+
+  // Print Customer Khata Statement
+  const handlePrintStatement = () => {
+    if (!selectedCustomer) return;
+    const printWindow = window.open('', '_blank', 'width=800,height=900');
+    if (!printWindow) return;
+
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Customer Khata Statement - ${selectedCustomer.name}</title>
+        <style>
+          body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; margin: 24px; color: #111; font-size: 13px; }
+          .header { text-align: center; border-bottom: 2px solid #000; padding-bottom: 12px; margin-bottom: 16px; }
+          .title { font-size: 20px; font-weight: 900; text-transform: uppercase; }
+          .sub { font-size: 11px; color: #444; margin-top: 2px; }
+          .meta { display: flex; justify-content: space-between; margin-bottom: 16px; font-size: 12px; }
+          table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+          th { background: #f0f0f0; border: 1px solid #ddd; padding: 8px 6px; font-weight: bold; font-size: 11px; text-transform: uppercase; }
+          td { border: 1px solid #ddd; padding: 6px 8px; font-size: 12px; }
+          .text-right { text-align: right; }
+          .bold { font-weight: bold; }
+          .closing { margin-top: 16px; border-top: 2px solid #000; padding-top: 8px; display: flex; justify-content: space-between; font-weight: bold; font-size: 14px; }
+          @media print { body { margin: 10mm; } }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <div class="title">SRI LAKSHMI SILKS & TEXTILES</div>
+          <div class="sub">Door No. 42/1, MG Road, Commercial Center, Coimbatore - 641001</div>
+          <div class="sub">GSTIN: 33AABCU9603R1ZM • Ph: +91 98421 55678</div>
+          <div style="margin-top: 8px; font-weight: bold; font-size: 14px;">CUSTOMER KHATA STATEMENT / LEDGER</div>
+        </div>
+
+        <div class="meta">
+          <div>
+            <strong>Customer: </strong>${selectedCustomer.name}<br/>
+            ${selectedCustomer.phone ? `Mobile: +91 ${selectedCustomer.phone}<br/>` : ''}
+            ${selectedCustomer.gstin ? `GSTIN: ${selectedCustomer.gstin}<br/>` : ''}
+            ${selectedCustomer.address ? `Address: ${selectedCustomer.address}, ${selectedCustomer.city || ''}` : ''}
+          </div>
+          <div style="text-align: right;">
+            <strong>Statement Date: </strong>${new Date().toLocaleDateString()}<br/>
+            <strong>Total Purchases: </strong>₹${Number(selectedCustomer.total_purchases).toFixed(2)}<br/>
+            <strong>Outstanding Balance: </strong><span style="color: #b91c1c; font-weight: bold;">₹${Number(selectedCustomer.outstanding_balance).toFixed(2)}</span>
+          </div>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 15%;">Date</th>
+              <th style="width: 20%;">Reference</th>
+              <th style="width: 35%;">Particulars</th>
+              <th class="text-right" style="width: 10%;">Debit (₹)</th>
+              <th class="text-right" style="width: 10%;">Credit (₹)</th>
+              <th class="text-right" style="width: 10%;">Balance (₹)</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${ledgerEntries.map(e => `
+              <tr>
+                <td>${e.date}</td>
+                <td style="font-family: monospace;">${e.reference}</td>
+                <td>${e.description}</td>
+                <td class="text-right">${e.debit > 0 ? `₹${e.debit.toFixed(2)}` : '-'}</td>
+                <td class="text-right" style="color: #15803d;">${e.credit > 0 ? `₹${e.credit.toFixed(2)}` : '-'}</td>
+                <td class="text-right bold" style="${(e.running_balance || 0) > 0 ? 'color: #b91c1c;' : ''}">₹${Number(e.running_balance || 0).toFixed(2)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+
+        <div class="closing">
+          <span>CLOSING OUTSTANDING BALANCE DUE:</span>
+          <span>₹${Number(selectedCustomer.outstanding_balance).toFixed(2)}</span>
+        </div>
+
+        <div style="margin-top: 35px; display: flex; justify-content: space-between; font-size: 11px;">
+          <div>Customer Signature</div>
+          <div>Authorized Signatory</div>
+        </div>
+
+        <script>
+          window.onload = function() { window.print(); }
+        </script>
+      </body>
+      </html>
+    `;
+    printWindow.document.write(html);
+    printWindow.document.close();
+  };
+
+  // Print Payment Receipt
+  const handlePrintReceipt = (receipt: CustomerPaymentReceipt) => {
+    const printWindow = window.open('', '_blank', 'width=450,height=600');
+    if (!printWindow) return;
+
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Payment Receipt - ${receipt.receipt_number}</title>
+        <style>
+          body { font-family: monospace; margin: 16px; font-size: 12px; line-height: 1.4; color: #000; }
+          .header { text-align: center; border-bottom: 1px dashed #000; padding-bottom: 8px; margin-bottom: 8px; }
+          .title { font-size: 16px; font-weight: bold; }
+          .row { display: flex; justify-content: space-between; margin: 4px 0; }
+          .divider { border-bottom: 1px dashed #000; margin: 8px 0; }
+          .amount-box { text-align: center; font-size: 18px; font-weight: 900; margin: 12px 0; padding: 6px; border: 1px solid #000; }
+          @media print { body { margin: 4mm; } }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <div class="title">SRI LAKSHMI SILKS & TEXTILES</div>
+          <div>Coimbatore - 641001 • Ph: +91 98421 55678</div>
+          <div style="font-weight: bold; margin-top: 4px;">CUSTOMER PAYMENT RECEIPT</div>
+        </div>
+
+        <div class="row"><span>Receipt No:</span><strong>${receipt.receipt_number}</strong></div>
+        <div class="row"><span>Date:</span><span>${receipt.date}</span></div>
+        <div class="row"><span>Customer:</span><strong>${receipt.customer_name}</strong></div>
+        ${receipt.customer_phone ? `<div class="row"><span>Mobile:</span><span>+91 ${receipt.customer_phone}</span></div>` : ''}
+
+        <div class="divider"></div>
+
+        <div class="amount-box">AMOUNT RECEIVED: ₹${Number(receipt.amount).toFixed(2)}</div>
+
+        <div class="row"><span>Payment Mode:</span><span style="text-transform: uppercase;">${receipt.payment_method}</span></div>
+        ${receipt.reference_number ? `<div class="row"><span>Reference:</span><span>${receipt.reference_number}</span></div>` : ''}
+        <div class="row"><span>Balance Before:</span><span>₹${Number(receipt.balance_before).toFixed(2)}</span></div>
+        <div class="row"><span>Balance After:</span><strong>₹${Number(receipt.balance_after).toFixed(2)}</strong></div>
+
+        <div class="divider"></div>
+        <div style="text-align: center; font-size: 10px; margin-top: 12px;">
+          Thank you for your payment!<br/>
+          Received by: ${receipt.received_by || 'Store Admin'}
+        </div>
+
+        <script>
+          window.onload = function() { window.print(); }
+        </script>
+      </body>
+      </html>
+    `;
+    printWindow.document.write(html);
+    printWindow.document.close();
   };
 
   // Open Create Customer
@@ -156,12 +317,15 @@ export const CustomersPage: React.FC<CustomersPageProps> = ({ onViewInvoice }) =
     if (!settleCustomer || settleAmount <= 0) return;
     setSaving(true);
     try {
-      await api.post(`/customers/${settleCustomer.id}/payment`, {
+      const res = await api.post(`/customers/${settleCustomer.id}/payment`, {
         amount: settleAmount,
         payment_method: settleMethod,
         reference_number: settleRef
       });
       setMsg({ type: 'success', text: `Payment of ₹${settleAmount} credited successfully.` });
+      if (res.data?.receipt) {
+        setPaymentReceipt(res.data.receipt);
+      }
       setSettleCustomer(null);
       fetchCustomers();
       if (selectedCustomer && selectedCustomer.id === settleCustomer.id) {
@@ -404,51 +568,136 @@ export const CustomersPage: React.FC<CustomersPageProps> = ({ onViewInvoice }) =
               </div>
             </div>
 
-            {/* Invoices List */}
-            <div className="flex-1 overflow-y-auto space-y-2">
-              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                Purchase History ({customerInvoices.length} invoices)
-              </h4>
+            {/* Drawer Tab Controls & Actions */}
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2">
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setDrawerTab('ledger')}
+                  className={`px-3 py-1.5 rounded-xl font-bold text-xs transition-colors ${
+                    drawerTab === 'ledger'
+                      ? 'bg-indigo-600 text-white shadow-xs'
+                      : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  Khata Ledger Statement ({ledgerEntries.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDrawerTab('invoices')}
+                  className={`px-3 py-1.5 rounded-xl font-bold text-xs transition-colors ${
+                    drawerTab === 'invoices'
+                      ? 'bg-indigo-600 text-white shadow-xs'
+                      : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  Invoices History ({customerInvoices.length})
+                </button>
+              </div>
 
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handlePrintStatement}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl text-xs font-semibold cursor-pointer"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  Print Statement
+                </button>
+                {selectedCustomer.outstanding_balance > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSettleCustomer(selectedCustomer);
+                      setSettleAmount(selectedCustomer.outstanding_balance);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs cursor-pointer"
+                  >
+                    <CreditCard className="w-3.5 h-3.5" />
+                    Collect Payment
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Drawer Body Content */}
+            <div className="flex-1 overflow-y-auto space-y-2">
               {drawerLoading ? (
-                <div className="py-8 text-center text-slate-400 text-xs">Loading ledger...</div>
-              ) : customerInvoices.length === 0 ? (
-                <div className="py-8 text-center text-slate-400 text-xs">No previous invoices for this customer.</div>
-              ) : (
-                <table className="w-full text-xs text-left">
-                  <thead>
-                    <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-400 uppercase font-bold text-[10px]">
-                      <th className="py-2 px-2">Invoice No</th>
-                      <th className="py-2 px-2">Date</th>
-                      <th className="py-2 px-2 text-right">Grand Total (₹)</th>
-                      <th className="py-2 px-2 text-right">Paid (₹)</th>
-                      <th className="py-2 px-2 text-right">Due (₹)</th>
-                      <th className="py-2 px-2 text-center">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                    {customerInvoices.map((inv) => (
-                      <tr key={inv.id}>
-                        <td className="py-2 px-2 font-mono font-bold text-slate-950 dark:text-white">
-                          {inv.invoice_number}
-                        </td>
-                        <td className="py-2 px-2 text-slate-500">{inv.invoice_date}</td>
-                        <td className="py-2 px-2 text-right font-mono font-bold">
-                          ₹{Number(inv.grand_total).toFixed(2)}
-                        </td>
-                        <td className="py-2 px-2 text-right font-mono text-emerald-600 font-semibold">
-                          ₹{Number(inv.amount_paid).toFixed(2)}
-                        </td>
-                        <td className="py-2 px-2 text-right font-mono text-red-600 font-bold">
-                          ₹{Number(inv.balance_due).toFixed(2)}
-                        </td>
-                        <td className="py-2 px-2 text-center uppercase text-[10px] font-bold">
-                          {inv.status === 'active' ? inv.payment_status : inv.status}
-                        </td>
+                <div className="py-8 text-center text-slate-400 text-xs">Loading ledger entries...</div>
+              ) : drawerTab === 'ledger' ? (
+                ledgerEntries.length === 0 ? (
+                  <div className="py-8 text-center text-slate-400 text-xs">No ledger transactions found for this customer.</div>
+                ) : (
+                  <table className="w-full text-xs text-left">
+                    <thead>
+                      <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-400 uppercase font-bold text-[10px]">
+                        <th className="py-2 px-2">Date</th>
+                        <th className="py-2 px-2">Reference</th>
+                        <th className="py-2 px-2">Particulars</th>
+                        <th className="py-2 px-2 text-right">Debit (₹)</th>
+                        <th className="py-2 px-2 text-right">Credit (₹)</th>
+                        <th className="py-2 px-2 text-right">Balance (₹)</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                      {ledgerEntries.map((e) => (
+                        <tr key={e.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                          <td className="py-2 px-2 text-slate-500 whitespace-nowrap">{e.date}</td>
+                          <td className="py-2 px-2 font-mono font-bold text-slate-900 dark:text-white">{e.reference}</td>
+                          <td className="py-2 px-2 text-slate-700 dark:text-slate-300">{e.description}</td>
+                          <td className="py-2 px-2 text-right font-mono text-slate-900 dark:text-white">
+                            {e.debit > 0 ? `₹${e.debit.toFixed(2)}` : '-'}
+                          </td>
+                          <td className="py-2 px-2 text-right font-mono text-emerald-600 font-semibold">
+                            {e.credit > 0 ? `₹${e.credit.toFixed(2)}` : '-'}
+                          </td>
+                          <td className={`py-2 px-2 text-right font-mono font-bold ${(e.running_balance || 0) > 0 ? 'text-red-600' : 'text-slate-600 dark:text-slate-400'}`}>
+                            ₹{Number(e.running_balance || 0).toFixed(2)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )
+              ) : (
+                customerInvoices.length === 0 ? (
+                  <div className="py-8 text-center text-slate-400 text-xs">No previous invoices for this customer.</div>
+                ) : (
+                  <table className="w-full text-xs text-left">
+                    <thead>
+                      <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-400 uppercase font-bold text-[10px]">
+                        <th className="py-2 px-2">Invoice No</th>
+                        <th className="py-2 px-2">Date</th>
+                        <th className="py-2 px-2 text-right">Grand Total (₹)</th>
+                        <th className="py-2 px-2 text-right">Paid (₹)</th>
+                        <th className="py-2 px-2 text-right">Due (₹)</th>
+                        <th className="py-2 px-2 text-center">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                      {customerInvoices.map((inv) => (
+                        <tr key={inv.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                          <td className="py-2 px-2 font-mono font-bold text-indigo-600 cursor-pointer hover:underline" onClick={() => onViewInvoice(inv)}>
+                            {inv.invoice_number}
+                          </td>
+                          <td className="py-2 px-2 text-slate-500">{inv.invoice_date}</td>
+                          <td className="py-2 px-2 text-right font-mono font-bold">
+                            ₹{Number(inv.grand_total).toFixed(2)}
+                          </td>
+                          <td className="py-2 px-2 text-right font-mono text-emerald-600 font-semibold">
+                            ₹{Number(inv.amount_paid).toFixed(2)}
+                          </td>
+                          <td className="py-2 px-2 text-right font-mono text-red-600 font-bold">
+                            ₹{Number(inv.balance_due).toFixed(2)}
+                          </td>
+                          <td className="py-2 px-2 text-center uppercase text-[10px] font-bold">
+                            {inv.status === 'active' ? inv.payment_status : inv.status}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )
               )}
             </div>
 
@@ -660,6 +909,76 @@ export const CustomersPage: React.FC<CustomersPageProps> = ({ onViewInvoice }) =
                 className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-md text-xs"
               >
                 {saving ? 'Processing...' : 'Confirm Payment'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* PAYMENT RECEIPT MODAL */}
+      {paymentReceipt && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl max-w-sm w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2 text-emerald-600">
+                <Receipt className="w-5 h-5" />
+                <h3 className="font-bold text-slate-900 dark:text-white text-base">Payment Received</h3>
+              </div>
+              <button onClick={() => setPaymentReceipt(null)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-4 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded-xl text-center space-y-1">
+              <span className="text-xs text-slate-500 font-semibold uppercase">Amount Credited</span>
+              <div className="text-2xl font-black text-emerald-700 dark:text-emerald-400 font-mono">
+                ₹{Number(paymentReceipt.amount).toFixed(2)}
+              </div>
+              <div className="text-[11px] text-slate-500 font-mono">
+                Receipt #{paymentReceipt.receipt_number} • {paymentReceipt.date}
+              </div>
+            </div>
+
+            <div className="space-y-2 text-xs">
+              <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800">
+                <span className="text-slate-500">Customer:</span>
+                <span className="font-bold text-slate-900 dark:text-white">{paymentReceipt.customer_name}</span>
+              </div>
+              <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800">
+                <span className="text-slate-500">Payment Mode:</span>
+                <span className="font-bold uppercase text-slate-900 dark:text-white">{paymentReceipt.payment_method}</span>
+              </div>
+              {paymentReceipt.reference_number && (
+                <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800">
+                  <span className="text-slate-500">Reference:</span>
+                  <span className="font-mono text-slate-900 dark:text-white">{paymentReceipt.reference_number}</span>
+                </div>
+              )}
+              <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800">
+                <span className="text-slate-500">Previous Dues:</span>
+                <span className="font-mono text-slate-700 dark:text-slate-300">₹{Number(paymentReceipt.balance_before).toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between py-1">
+                <span className="text-slate-500">Remaining Balance:</span>
+                <span className="font-mono font-bold text-red-600">₹{Number(paymentReceipt.balance_after).toFixed(2)}</span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => setPaymentReceipt(null)}
+                className="flex-1 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-semibold text-slate-700 dark:text-slate-300"
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                onClick={() => handlePrintReceipt(paymentReceipt)}
+                className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-md shadow-emerald-600/20"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                Print Receipt
               </button>
             </div>
           </div>

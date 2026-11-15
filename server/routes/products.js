@@ -79,6 +79,234 @@ router.delete('/categories/:id', requireAdmin, (req, res) => {
   res.json({ message: 'Category deleted successfully' });
 });
 
+const { generateBarcodeSvg, generateUniqueBarcode } = require('../services/barcodeService');
+
+// --- BARCODE SERVICES ---
+
+// Generate unique barcode
+router.get('/barcode/generate', (req, res) => {
+  const barcode = generateUniqueBarcode();
+  res.json({ barcode });
+});
+
+// Render SVG barcode
+router.get('/barcode/svg', (req, res) => {
+  const { code, width, height, text } = req.query;
+  if (!code) return res.status(400).send('Barcode text is required');
+  const svg = generateBarcodeSvg(code, {
+    width: parseInt(width) || 2,
+    height: parseInt(height) || 45,
+    showText: text !== 'false'
+  });
+  res.setHeader('Content-Type', 'image/svg+xml');
+  res.send(svg);
+});
+
+// Barcode labels print batch
+router.post('/barcode/labels', requireAuth, (req, res) => {
+  const { items } = req.body;
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'Please provide items to generate barcode labels' });
+  }
+
+  const labels = [];
+  for (const item of items) {
+    const count = Math.min(100, Math.max(1, parseInt(item.count) || 1));
+    let title = '';
+    let sku = '';
+    let barcode = '';
+    let price = 0;
+    let unit = 'Pieces';
+
+    if (item.variant_id) {
+      const v = db.prepare(`
+        SELECT v.*, p.name as parent_name, p.unit
+        FROM product_variants v
+        JOIN products p ON v.product_id = p.id
+        WHERE v.id = ?
+      `).get(item.variant_id);
+      if (v) {
+        title = `${v.parent_name} (${v.variant_name})`;
+        sku = v.sku;
+        barcode = v.barcode || v.sku;
+        price = v.selling_price;
+        unit = v.unit;
+      }
+    } else if (item.product_id) {
+      const p = db.prepare('SELECT * FROM products WHERE id = ?').get(item.product_id);
+      if (p) {
+        title = p.name;
+        sku = p.sku;
+        barcode = p.barcode || p.sku;
+        price = p.selling_price;
+        unit = p.unit;
+      }
+    }
+
+    if (title && barcode) {
+      const svg = generateBarcodeSvg(barcode, { width: 1.5, height: 35 });
+      for (let i = 0; i < count; i++) {
+        labels.push({
+          title,
+          sku,
+          barcode,
+          price,
+          unit,
+          svg
+        });
+      }
+    }
+  }
+
+  res.json({ labels, count: labels.length });
+});
+
+// --- PRODUCT VARIANTS ---
+
+// Get variants for a product
+router.get('/:id/variants', (req, res) => {
+  const variants = db.prepare('SELECT * FROM product_variants WHERE product_id = ? ORDER BY id ASC').all(req.params.id);
+  res.json(variants);
+});
+
+// Create variant for a product
+router.post('/:id/variants', requireAuth, (req, res) => {
+  const productId = req.params.id;
+  const prod = db.prepare('SELECT * FROM products WHERE id = ?').get(productId);
+  if (!prod) return res.status(404).json({ error: 'Product not found' });
+
+  const {
+    variant_name, color, size, pattern, material, brand,
+    sku, barcode, purchase_price, selling_price, gst_rate, stock_quantity, min_stock_alert
+  } = req.body;
+
+  if (!variant_name || !variant_name.trim() || !sku || !sku.trim()) {
+    return res.status(400).json({ error: 'Variant name and SKU are required' });
+  }
+
+  // Check unique SKU
+  const existingSku = db.prepare('SELECT id FROM product_variants WHERE lower(sku) = lower(?)').get(sku.trim());
+  if (existingSku) {
+    return res.status(400).json({ error: 'A variant with this SKU already exists' });
+  }
+
+  // Check unique barcode if provided
+  const finalBarcode = barcode && barcode.trim() ? barcode.trim() : generateUniqueBarcode();
+  const existingBarcode = db.prepare('SELECT id FROM product_variants WHERE barcode = ?').get(finalBarcode);
+  if (existingBarcode) {
+    return res.status(400).json({ error: 'A variant with this Barcode already exists' });
+  }
+
+  const initialStock = parseFloat(stock_quantity) || 0;
+
+  const insert = db.prepare(`
+    INSERT INTO product_variants (
+      product_id, variant_name, color, size, pattern, material, brand,
+      sku, barcode, purchase_price, selling_price, gst_rate, stock_quantity, min_stock_alert
+    ) VALUES (
+      ?, ?, ?, ?, ?, ?, ?,
+      ?, ?, ?, ?, ?, ?, ?
+    )
+  `);
+
+  const txn = db.transaction(() => {
+    insert.run(
+      productId,
+      variant_name.trim(),
+      color ? color.trim() : null,
+      size ? size.trim() : null,
+      pattern ? pattern.trim() : null,
+      material ? material.trim() : null,
+      brand ? brand.trim() : null,
+      sku.trim().toUpperCase(),
+      finalBarcode,
+      purchase_price !== undefined ? parseFloat(purchase_price) : prod.purchase_price,
+      selling_price !== undefined ? parseFloat(selling_price) : prod.selling_price,
+      gst_rate !== undefined ? parseFloat(gst_rate) : prod.gst_rate,
+      initialStock,
+      min_stock_alert !== undefined ? parseFloat(min_stock_alert) : 5.0
+    );
+
+    // Update parent product flag
+    db.prepare('UPDATE products SET has_variants = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(productId);
+
+    // Log inventory transaction if stock > 0
+    if (initialStock > 0) {
+      db.prepare(`
+        INSERT INTO inventory_transactions (
+          product_id, product_name, transaction_type, quantity, quantity_before, quantity_after, unit, reference_id, reason, created_by_user_id
+        ) VALUES (?, ?, 'stock_in', ?, 0, ?, ?, 'INIT-VARIANT', 'Initial variant stock balance', ?)
+      `).run(productId, `${prod.name} (${variant_name})`, initialStock, initialStock, prod.unit, req.user.id);
+    }
+  });
+
+  txn();
+
+  logAudit(req.user.id, req.user.full_name, 'VARIANT_CREATE', 'product_variants', productId, `Added variant ${variant_name} (${sku}) to product ${prod.name}`);
+
+  const created = db.prepare('SELECT * FROM product_variants WHERE sku = ?').get(sku.trim().toUpperCase());
+  res.status(201).json(created);
+});
+
+// Update variant
+router.put('/variants/:variantId', requireAuth, (req, res) => {
+  const { variantId } = req.params;
+  const current = db.prepare('SELECT * FROM product_variants WHERE id = ?').get(variantId);
+  if (!current) return res.status(404).json({ error: 'Variant not found' });
+
+  const {
+    variant_name, color, size, pattern, material, brand,
+    sku, barcode, purchase_price, selling_price, gst_rate, stock_quantity, min_stock_alert, status
+  } = req.body;
+
+  db.prepare(`
+    UPDATE product_variants
+    SET variant_name = ?, color = ?, size = ?, pattern = ?, material = ?, brand = ?,
+        sku = ?, barcode = ?, purchase_price = ?, selling_price = ?, gst_rate = ?,
+        stock_quantity = ?, min_stock_alert = ?, status = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(
+    variant_name ? variant_name.trim() : current.variant_name,
+    color !== undefined ? color : current.color,
+    size !== undefined ? size : current.size,
+    pattern !== undefined ? pattern : current.pattern,
+    material !== undefined ? material : current.material,
+    brand !== undefined ? brand : current.brand,
+    sku ? sku.trim().toUpperCase() : current.sku,
+    barcode ? barcode.trim() : current.barcode,
+    purchase_price !== undefined ? parseFloat(purchase_price) : current.purchase_price,
+    selling_price !== undefined ? parseFloat(selling_price) : current.selling_price,
+    gst_rate !== undefined ? parseFloat(gst_rate) : current.gst_rate,
+    stock_quantity !== undefined ? parseFloat(stock_quantity) : current.stock_quantity,
+    min_stock_alert !== undefined ? parseFloat(min_stock_alert) : current.min_stock_alert,
+    status || current.status,
+    variantId
+  );
+
+  logAudit(req.user.id, req.user.full_name, 'VARIANT_UPDATE', 'product_variants', variantId, `Updated variant ${variant_name || current.variant_name}`);
+
+  const updated = db.prepare('SELECT * FROM product_variants WHERE id = ?').get(variantId);
+  res.json(updated);
+});
+
+// Delete variant
+router.delete('/variants/:variantId', requireAuth, (req, res) => {
+  const { variantId } = req.params;
+  const current = db.prepare('SELECT * FROM product_variants WHERE id = ?').get(variantId);
+  if (!current) return res.status(404).json({ error: 'Variant not found' });
+
+  db.prepare('DELETE FROM product_variants WHERE id = ?').run(variantId);
+
+  // Check if remaining variants exist
+  const remaining = db.prepare('SELECT count(*) as c FROM product_variants WHERE product_id = ?').get(current.product_id).c;
+  if (remaining === 0) {
+    db.prepare('UPDATE products SET has_variants = 0 WHERE id = ?').run(current.product_id);
+  }
+
+  logAudit(req.user.id, req.user.full_name, 'VARIANT_DELETE', 'product_variants', variantId, `Deleted variant ${current.variant_name}`);
+  res.json({ message: 'Variant deleted successfully' });
+});
+
 // --- PRODUCTS ---
 
 // Get all products with filters
@@ -86,7 +314,8 @@ router.get('/', (req, res) => {
   const { q, category_id, status, stock_status } = req.query;
 
   let query = `
-    SELECT p.*, c.name as category_display_name
+    SELECT p.*, c.name as category_display_name,
+      (SELECT count(*) FROM product_variants WHERE product_id = p.id) as variants_count
     FROM products p
     LEFT JOIN categories c ON p.category_id = c.id
     WHERE 1=1

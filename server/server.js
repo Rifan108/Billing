@@ -5,7 +5,34 @@ const fs = require('fs');
 require('dotenv').config();
 
 // Ensure DB is initialized
-require('./database');
+const db = require('./database');
+
+// Automated Daily Database Backup
+const backupsDir = path.join(__dirname, '..', 'backups');
+if (!fs.existsSync(backupsDir)) fs.mkdirSync(backupsDir, { recursive: true });
+
+function runDailyAutoBackup() {
+  try {
+    const todayStr = new Date().toISOString().split('T')[0];
+    const existing = db.prepare(`SELECT id FROM backups WHERE filename LIKE ?`).get(`%${todayStr}%`);
+    if (!existing) {
+      const filename = `textile_auto_backup_${todayStr}.db`;
+      const targetPath = path.join(backupsDir, filename);
+      db.backup(targetPath).then(() => {
+        const stats = fs.statSync(targetPath);
+        db.prepare(`
+          INSERT INTO backups (filename, filesize, backup_type, created_by)
+          VALUES (?, ?, 'daily_auto', 'System Scheduler')
+        `).run(filename, stats.size);
+        console.log(`[AutoBackup] Completed daily snapshot: ${filename}`);
+      }).catch(err => console.error('[AutoBackup] Backup failed:', err));
+    }
+  } catch (err) {
+    console.error('[AutoBackup] Error:', err);
+  }
+}
+setTimeout(runDailyAutoBackup, 5000);
+setInterval(runDailyAutoBackup, 24 * 60 * 60 * 1000);
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -35,6 +62,9 @@ app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/payments', require('./routes/payments'));
 app.use('/api/expenses', require('./routes/expenses'));
 app.use('/api/reports', require('./routes/reports'));
+app.use('/api/suppliers', require('./routes/suppliers'));
+app.use('/api/purchases', require('./routes/purchases'));
+app.use('/api/returns', require('./routes/returns'));
 app.use('/api/backup', require('./routes/backup'));
 app.use('/api/audit', require('./routes/audit'));
 

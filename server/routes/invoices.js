@@ -472,5 +472,48 @@ router.post('/:id/payment', requireAuth, (req, res) => {
   });
 });
 
+// WhatsApp invoice share message generator & logger
+router.get('/:id/whatsapp', requireAuth, (req, res) => {
+  const { id } = req.params;
+  const invoice = db.prepare('SELECT * FROM invoices WHERE id = ?').get(id);
+  if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
+
+  const shop = db.prepare('SELECT * FROM shop_settings WHERE id = 1').get();
+  const shopName = shop?.shop_name || 'Sri Lakshmi Silks & Textiles';
+  const shopContact = shop?.contact_number || '';
+
+  // Clean phone number (Indian 10-digit mobile prefix with 91)
+  let rawPhone = (invoice.customer_phone || '').replace(/[^0-9]/g, '');
+  if (rawPhone.length === 10) {
+    rawPhone = `91${rawPhone}`;
+  }
+
+  const message = [
+    `🧾 *${shopName}*`,
+    `*Tax Invoice: ${invoice.invoice_number}*`,
+    `📅 Date: ${invoice.invoice_date} ${invoice.invoice_time || ''}`,
+    `👤 Customer: ${invoice.customer_name}`,
+    `📦 Total Items: ${invoice.total_items_count}`,
+    `💰 Bill Amount: ₹${invoice.grand_total.toFixed(2)}`,
+    `💳 Status: ${invoice.payment_status.toUpperCase()} (${invoice.payment_method.toUpperCase()})`,
+    invoice.balance_due > 0 ? `⚠️ Outstanding: ₹${invoice.balance_due.toFixed(2)}` : '✅ Fully Paid',
+    ``,
+    `Thank you for shopping with us! Please keep this message for your records.`,
+    shopContact ? `📞 Contact: ${shopContact}` : ''
+  ].filter(Boolean).join('\n');
+
+  // Record whatsapp_sent_at timestamp
+  db.prepare("UPDATE invoices SET whatsapp_sent_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
+
+  const encoded = encodeURIComponent(message);
+  const whatsappUrl = rawPhone ? `https://wa.me/${rawPhone}?text=${encoded}` : `https://wa.me/?text=${encoded}`;
+
+  res.json({
+    phone: rawPhone,
+    message,
+    whatsappUrl
+  });
+});
+
 module.exports = router;
 

@@ -14,7 +14,13 @@ import {
   Printer,
   Zap,
   HelpCircle,
-  Smartphone
+  Smartphone,
+  Database,
+  HardDrive,
+  Download,
+  RotateCw,
+  Trash2,
+  UploadCloud
 } from 'lucide-react';
 import api from '../services/api';
 import { ShopSettings } from '../types';
@@ -25,6 +31,12 @@ export const ShopSettingsPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Database Backup & Restore state
+  const [backups, setBackups] = useState<{ filename: string; size: string; created_at: string }[]>([]);
+  const [backupLoading, setBackupLoading] = useState(false);
+  const [creatingBackup, setCreatingBackup] = useState(false);
+  const [restoringFilename, setRestoringFilename] = useState<string | null>(null);
 
   // File upload state
   const [qrFile, setQrFile] = useState<File | null>(null);
@@ -46,9 +58,85 @@ export const ShopSettingsPage: React.FC = () => {
     }
   };
 
+  const fetchBackups = async () => {
+    try {
+      setBackupLoading(true);
+      const res = await api.get('/backup/list');
+      setBackups(res.data || []);
+    } catch (err) {
+      console.error('Failed to fetch backups:', err);
+    } finally {
+      setBackupLoading(false);
+    }
+  };
+
   useEffect(() => {
     fetchShop();
+    fetchBackups();
   }, []);
+
+  const handleCreateBackup = async () => {
+    setCreatingBackup(true);
+    setMsg(null);
+    try {
+      const res = await api.post('/backup/create');
+      setMsg({ type: 'success', text: `Backup snapshot "${res.data.filename}" created successfully!` });
+      fetchBackups();
+    } catch (err: any) {
+      setMsg({ type: 'error', text: err.response?.data?.error || 'Failed to create database backup.' });
+    } finally {
+      setCreatingBackup(false);
+    }
+  };
+
+  const handleRestoreBackup = async (filename: string) => {
+    if (!window.confirm(`⚠️ CAUTION: Restoring database snapshot "${filename}" will restore all sales, inventory, and ledger records to that moment.\n\nA safety backup of your current database will be saved automatically before restoring.\n\nDo you want to proceed?`)) {
+      return;
+    }
+    setRestoringFilename(filename);
+    try {
+      await api.post(`/backup/restore-existing/${filename}`);
+      alert(`Database successfully restored from snapshot "${filename}". The application will now reload.`);
+      window.location.reload();
+    } catch (err: any) {
+      alert(err.response?.data?.error || 'Restore failed. The current database has been preserved safely.');
+    } finally {
+      setRestoringFilename(null);
+    }
+  };
+
+  const handleDownloadBackup = (filename: string) => {
+    window.open(`/api/backup/download/${filename}`, '_blank');
+  };
+
+  const handleDeleteBackup = async (filename: string) => {
+    if (!window.confirm(`Delete backup file "${filename}"?`)) return;
+    try {
+      await api.delete(`/backup/${filename}`);
+      fetchBackups();
+    } catch (err: any) {
+      alert(err.response?.data?.error || 'Failed to delete backup.');
+    }
+  };
+
+  const handleUploadDatabaseFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+    const file = e.target.files[0];
+    if (!window.confirm(`⚠️ CAUTION: You are uploading "${file.name}" to replace your active database.\n\nA pre-restore backup will be created automatically.\n\nProceed?`)) {
+      return;
+    }
+    const data = new FormData();
+    data.append('backup_file', file);
+    try {
+      await api.post('/backup/restore', data, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      });
+      alert('Database restored successfully from uploaded file. Reloading...');
+      window.location.reload();
+    } catch (err: any) {
+      alert(err.response?.data?.error || 'Upload restore failed. Verify it is a valid SQLite .db file.');
+    }
+  };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -651,6 +739,113 @@ export const ShopSettingsPage: React.FC = () => {
 
             </div>
 
+          </div>
+        </div>
+
+        {/* DATABASE BACKUP & SAFETY RESTORE SECTION */}
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-xs space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-3">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 rounded-xl">
+                <Database className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-bold text-slate-900 dark:text-white text-base">
+                  Automatic & On-Demand Database Backup & Restore
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Daily automated snapshots and on-demand database exports to protect your store data.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <label className="cursor-pointer flex items-center gap-1.5 px-3 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl text-xs font-semibold shadow-xs transition-colors">
+                <UploadCloud className="w-3.5 h-3.5" />
+                Upload & Restore DB
+                <input
+                  type="file"
+                  accept=".db,.sqlite,.sqlite3"
+                  onChange={handleUploadDatabaseFile}
+                  className="hidden"
+                />
+              </label>
+
+              <button
+                type="button"
+                onClick={handleCreateBackup}
+                disabled={creatingBackup}
+                className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-md shadow-indigo-600/20 active:scale-95 cursor-pointer disabled:opacity-50"
+              >
+                <HardDrive className="w-3.5 h-3.5" />
+                {creatingBackup ? 'Creating Snapshot...' : 'Backup Database Now'}
+              </button>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-xs text-slate-500 font-semibold">
+              <span>Saved Backup Snapshots ({backups.length})</span>
+              <span>Sorted by newest</span>
+            </div>
+
+            {backupLoading ? (
+              <div className="py-6 text-center text-slate-400 text-xs">Loading backup catalog...</div>
+            ) : backups.length === 0 ? (
+              <div className="py-6 text-center text-slate-400 text-xs border border-dashed border-slate-200 dark:border-slate-800 rounded-xl">
+                No backup files found yet. Click "Backup Database Now" to take your first safety snapshot.
+              </div>
+            ) : (
+              <div className="max-h-64 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800 border border-slate-200 dark:border-slate-800 rounded-xl">
+                {backups.map((b) => (
+                  <div key={b.filename} className="p-3 flex items-center justify-between text-xs hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
+                    <div className="space-y-0.5">
+                      <div className="font-mono font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                        <span>{b.filename}</span>
+                        <span className="text-[10px] bg-slate-100 dark:bg-slate-800 text-slate-500 px-1.5 py-0.2 rounded font-sans">
+                          {b.size}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-slate-400">
+                        Created: {new Date(b.created_at).toLocaleString()}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleDownloadBackup(b.filename)}
+                        className="px-2.5 py-1.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer"
+                        title="Download backup file to your computer"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        Download
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={restoringFilename === b.filename}
+                        onClick={() => handleRestoreBackup(b.filename)}
+                        className="px-2.5 py-1.5 bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 text-amber-700 dark:text-amber-400 border border-amber-300 dark:border-amber-800 rounded-lg text-xs font-bold flex items-center gap-1 cursor-pointer"
+                        title="Safely restore database from this snapshot"
+                      >
+                        <RotateCw className={`w-3.5 h-3.5 ${restoringFilename === b.filename ? 'animate-spin' : ''}`} />
+                        {restoringFilename === b.filename ? 'Restoring...' : 'Restore'}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteBackup(b.filename)}
+                        className="p-1.5 text-slate-400 hover:text-red-600 rounded-lg"
+                        title="Delete this snapshot file"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 

@@ -17,7 +17,8 @@ import {
   CornerDownLeft,
   Package,
   Tag,
-  CheckCircle2
+  CheckCircle2,
+  Barcode
 } from 'lucide-react';
 import api from '../services/api';
 import { Product, Customer, ShopSettings, TextileUnit, PaymentMethod, Invoice, Category } from '../types';
@@ -28,6 +29,9 @@ interface BillingPageProps {
 
 interface BillItem {
   product_id?: number;
+  variant_id?: number;
+  variant_name?: string;
+  barcode?: string;
   product_name: string;
   sku: string;
   hsn_code: string;
@@ -135,10 +139,43 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
+  // Barcode Scanner Integration
+  const [barcodeInput, setBarcodeInput] = useState('');
+  const [isScanningBarcode, setIsScanningBarcode] = useState(false);
+  const [scanToast, setScanToast] = useState<{ name: string; variant?: string; rate: number } | null>(null);
+
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const barcodeInputRef = useRef<HTMLInputElement>(null);
   const searchContainerRef = useRef<HTMLDivElement>(null);
   const stagedQtyInputRef = useRef<HTMLInputElement>(null);
   const quickAddPriceInputRef = useRef<HTMLInputElement>(null);
+
+  // Audio beep feedback for barcode scanner (High-tone beep on success, low buzzer on error)
+  const playScannerBeep = (success = true) => {
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'sine';
+      if (success) {
+        osc.frequency.setValueAtTime(1046.5, ctx.currentTime); // C6 tone
+        gain.gain.setValueAtTime(0.18, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.12);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.12);
+      } else {
+        osc.frequency.setValueAtTime(320, ctx.currentTime);
+        gain.gain.setValueAtTime(0.25, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.25);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.25);
+      }
+    } catch (_) { }
+  };
 
   // Load shop settings, Indian states list, and Categories
   useEffect(() => {
@@ -158,13 +195,17 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
       setCategories(res.data);
     }).catch(console.error);
 
-    // Keyboard shortcut listener: F2 to focus product search, Esc to close dropdowns / cancel staging
+    // Keyboard shortcut listener: F2 to focus product search, F3 to focus barcode scanner, Esc to close dropdowns / cancel staging
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'F2') {
         e.preventDefault();
         setStagedProduct(null);
         searchInputRef.current?.focus();
         searchInputRef.current?.select();
+      } else if (e.key === 'F3') {
+        e.preventDefault();
+        barcodeInputRef.current?.focus();
+        barcodeInputRef.current?.select();
       } else if (e.key === 'Escape') {
         setShowProductDropdown(false);
         setShowCustomerDropdown(false);
@@ -384,12 +425,18 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
     setSelectedSearchIndex(-1);
   };
 
-  // Add product to bill (from staged bar or direct 1-click)
+  // Add product to bill (from staged bar, barcode scanner, or direct 1-click)
   const addProductToBill = (p: Product, customQty: number = 1, customRate?: number, customDiscount: number = 0) => {
     const qtyToAdd = Number(customQty) > 0 ? Number(customQty) : 1;
     const rateToUse = customRate !== undefined && customRate >= 0 ? customRate : p.selling_price;
 
-    const existingIdx = items.findIndex(i => i.product_id === p.id);
+    const existingIdx = items.findIndex(i => {
+      if (p.variant_id) {
+        return i.variant_id === p.variant_id;
+      }
+      return i.product_id === p.id && !i.variant_id;
+    });
+
     if (existingIdx >= 0) {
       const updated = [...items];
       updated[existingIdx].quantity += qtyToAdd;
@@ -400,6 +447,9 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
     } else {
       const newItem: BillItem = computeItem({
         product_id: p.id,
+        variant_id: p.variant_id,
+        variant_name: p.variant_name,
+        barcode: p.barcode,
         product_name: p.name,
         sku: p.sku,
         hsn_code: p.hsn_code || '5208',
@@ -427,7 +477,38 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
     setShowProductDropdown(false);
     setSelectedSearchIndex(-1);
     setStagedProduct(null);
-    searchInputRef.current?.focus();
+  };
+
+  // Dedicated Barcode Scanner input handler
+  const handleBarcodeSubmit = async (codeToScan?: string) => {
+    const code = (codeToScan || barcodeInput).trim();
+    if (!code) return;
+    setIsScanningBarcode(true);
+    try {
+      const res = await api.get(`/billing/barcode-scan?barcode=${encodeURIComponent(code)}`);
+      if (res.data?.success && res.data?.product) {
+        const prod = res.data.product;
+        playScannerBeep(true);
+        addProductToBill(prod, 1);
+        setScanToast({
+          name: prod.name,
+          variant: prod.variant_name,
+          rate: prod.selling_price
+        });
+        setTimeout(() => setScanToast(null), 3000);
+        setBarcodeInput('');
+        setError('');
+        // Keep focus on barcode scanner for rapid multi-item scanning
+        setTimeout(() => barcodeInputRef.current?.focus(), 40);
+      }
+    } catch (err: any) {
+      playScannerBeep(false);
+      const msg = err.response?.data?.error || `Barcode "${code}" not found in inventory.`;
+      setError(msg);
+      barcodeInputRef.current?.select();
+    } finally {
+      setIsScanningBarcode(false);
+    }
   };
 
   // Confirm staged product addition
@@ -463,7 +544,27 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
       } else if (searchResults.length === 1) {
         stageProduct(searchResults[0]);
       } else if (searchResults.length === 0 && searchQuery.trim().length > 0) {
-        openQuickAddModal(searchQuery.trim());
+        // Check if entered query is a barcode
+        api.get(`/billing/barcode-scan?barcode=${encodeURIComponent(searchQuery.trim())}`)
+          .then(res => {
+            if (res.data?.success && res.data?.product) {
+              const prod = res.data.product;
+              playScannerBeep(true);
+              addProductToBill(prod, 1);
+              setScanToast({
+                name: prod.name,
+                variant: prod.variant_name,
+                rate: prod.selling_price
+              });
+              setTimeout(() => setScanToast(null), 3000);
+              setSearchQuery('');
+            } else {
+              openQuickAddModal(searchQuery.trim());
+            }
+          })
+          .catch(() => {
+            openQuickAddModal(searchQuery.trim());
+          });
       }
     } else if (e.key === 'Escape') {
       setShowProductDropdown(false);
@@ -625,6 +726,8 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
         place_of_supply_code: placeOfSupplyCode,
         items: items.map(i => ({
           product_id: i.product_id,
+          variant_id: i.variant_id,
+          variant_name: i.variant_name,
           name: i.product_name,
           sku: i.sku,
           hsn_code: i.hsn_code,
@@ -809,20 +912,20 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
               <div className="flex items-center gap-2">
                 <Package className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
                 <span className="text-xs font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider">
-                  Product Name Typing & Fast Search
+                  Product Search & Barcode Scanner
                 </span>
               </div>
               <div className="hidden sm:flex items-center gap-2 text-[11px] text-slate-400 font-mono">
-                <span className="bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-700">F2 Focus</span>
+                <span className="bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-700">F2 Search</span>
+                <span className="bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 px-2 py-0.5 rounded border border-emerald-300 dark:border-emerald-800 font-bold">F3 Barcode</span>
                 <span className="bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-700">↑↓ Navigate</span>
                 <span className="bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-700">↵ Select</span>
-                <span className="bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-700">Esc Close</span>
               </div>
             </div>
 
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
-              {/* Fast Search input */}
-              <div className="relative flex-1">
+            <div className="grid grid-cols-1 md:grid-cols-12 gap-2.5 items-stretch">
+              {/* Fast Search input (7 cols on desktop) */}
+              <div className="relative md:col-span-7">
                 <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
                 <input
                   ref={searchInputRef}
@@ -830,7 +933,7 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   onKeyDown={handleSearchKeyDown}
-                  placeholder="Type product name (e.g. Silk Saree, Cotton, Shirt), scan barcode, or SKU..."
+                  placeholder="Type product name (e.g. Silk Saree, Cotton, Shirt), SKU..."
                   className="w-full pl-10 pr-20 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-xs sm:text-sm font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-all"
                 />
 
@@ -870,7 +973,7 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
                         return (
                           <div
                             id={`search-result-item-${idx}`}
-                            key={p.id}
+                            key={`${p.id}-${p.variant_id || 0}`}
                             onClick={() => stageProduct(p)}
                             onMouseEnter={() => setSelectedSearchIndex(idx)}
                             className={`p-3 cursor-pointer flex items-center justify-between text-xs transition-colors ${
@@ -884,6 +987,11 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
                                 <span className="font-bold text-slate-900 dark:text-white text-sm">
                                   {p.name}
                                 </span>
+                                {p.is_variant && p.variant_name && (
+                                  <span className="bg-indigo-100 dark:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 font-bold px-2 py-0.5 rounded text-[10px] border border-indigo-200 dark:border-indigo-700">
+                                    Variant: {p.variant_name}
+                                  </span>
+                                )}
                                 {(p.category_name || p.category_display_name) && (
                                   <span className="bg-slate-100 dark:bg-slate-700 px-2 py-0.5 rounded text-[10px] text-slate-600 dark:text-slate-300 font-medium">
                                     {p.category_name || p.category_display_name}
@@ -892,6 +1000,7 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
                               </div>
                               <div className="flex items-center gap-2 text-slate-500 text-[11px] font-mono flex-wrap">
                                 <span>SKU: <strong className="text-slate-700 dark:text-slate-300">{p.sku}</strong></span>
+                                {p.barcode && <span>• Barcode: <strong className="text-slate-700 dark:text-slate-300">{p.barcode}</strong></span>}
                                 {p.hsn_code && <span>• HSN: {p.hsn_code}</span>}
                                 <span
                                   className={`px-1.5 py-0.5 rounded font-bold ${
@@ -961,16 +1070,61 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
                 )}
               </div>
 
-              {/* Add Custom Blank Line Item Button */}
-              <button
-                type="button"
-                onClick={addBlankClothItem}
-                className="px-3.5 py-2.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                Add Custom Cloth Line
-              </button>
+              {/* Dedicated Barcode Scanner input (5 cols on desktop) */}
+              <div className="relative md:col-span-5 flex items-center gap-2">
+                <div className="relative flex-1">
+                  <Barcode className="w-4 h-4 text-emerald-600 dark:text-emerald-400 absolute left-3.5 top-3" />
+                  <input
+                    ref={barcodeInputRef}
+                    type="text"
+                    value={barcodeInput}
+                    onChange={(e) => setBarcodeInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleBarcodeSubmit();
+                      }
+                    }}
+                    placeholder="Scan Barcode (USB / Keyboard)..."
+                    className="w-full pl-10 pr-16 py-2.5 rounded-xl border-2 border-emerald-500/70 dark:border-emerald-500/60 bg-emerald-50/30 dark:bg-emerald-950/20 text-slate-900 dark:text-white text-xs sm:text-sm font-mono font-bold focus:ring-2 focus:ring-emerald-500 focus:outline-none transition-all placeholder:font-sans placeholder:font-normal placeholder:text-slate-400"
+                  />
+                  <div className="absolute right-2.5 top-2.5 flex items-center gap-1">
+                    {isScanningBarcode && (
+                      <div className="w-3.5 h-3.5 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin" />
+                    )}
+                    <span className="text-[10px] bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-800 px-1.5 py-0.5 rounded font-mono font-bold">
+                      F3
+                    </span>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={addBlankClothItem}
+                  className="px-3 py-2.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl text-xs font-semibold flex items-center justify-center gap-1 transition-colors whitespace-nowrap cursor-pointer shrink-0"
+                  title="Add blank custom cloth line"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Custom</span>
+                </button>
+              </div>
+
             </div>
+
+            {/* Instant Scanned Item Toast Banner */}
+            {scanToast && (
+              <div className="p-2.5 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-300 dark:border-emerald-800 rounded-xl flex items-center justify-between text-xs text-emerald-800 dark:text-emerald-300 animate-in fade-in slide-in-from-top-1 duration-150">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>
+                    Scanned & Added: <strong>{scanToast.name}</strong> {scanToast.variant && <span className="text-emerald-700 dark:text-emerald-400 font-semibold">({scanToast.variant})</span>}
+                  </span>
+                </div>
+                <div className="font-mono font-bold text-emerald-700 dark:text-emerald-300">
+                  ₹{scanToast.rate.toFixed(2)}
+                </div>
+              </div>
+            )}
 
             {/* STAGED PRODUCT ENTRY BAR (Instant Quantity & Rate Input) */}
             {stagedProduct && (
@@ -983,6 +1137,11 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
                     <span className="font-extrabold text-slate-900 dark:text-white text-sm sm:text-base">
                       {stagedProduct.product.name}
                     </span>
+                    {stagedProduct.product.is_variant && stagedProduct.product.variant_name && (
+                      <span className="bg-indigo-600 text-white font-bold px-2 py-0.5 rounded text-xs">
+                        {stagedProduct.product.variant_name}
+                      </span>
+                    )}
                   </div>
                   <button
                     type="button"
@@ -1134,7 +1293,7 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
                       <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
                         <td className="py-2 px-2 text-center text-slate-400 font-mono">{idx + 1}</td>
 
-                        {/* Name & SKU */}
+                        {/* Name & SKU & Variant */}
                         <td className="py-2 px-2">
                           <input
                             type="text"
@@ -1142,9 +1301,16 @@ export const BillingPage: React.FC<BillingPageProps> = ({ onInvoiceCreated }) =>
                             onChange={(e) => updateItem(idx, { product_name: e.target.value })}
                             className="w-full font-semibold text-slate-900 dark:text-white bg-transparent border-b border-transparent hover:border-slate-300 focus:border-indigo-500 focus:outline-none"
                           />
-                          {item.sku && (
-                            <span className="text-[10px] text-slate-400 font-mono block">SKU: {item.sku}</span>
-                          )}
+                          <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                            {item.variant_name && (
+                              <span className="text-[10px] bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 font-bold px-1.5 py-0.2 rounded border border-indigo-200 dark:border-indigo-800">
+                                {item.variant_name}
+                              </span>
+                            )}
+                            {item.sku && (
+                              <span className="text-[10px] text-slate-400 font-mono">SKU: {item.sku}</span>
+                            )}
+                          </div>
                         </td>
 
                         {/* HSN */}

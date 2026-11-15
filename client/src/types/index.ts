@@ -52,6 +52,173 @@ export interface Category {
   created_at?: string;
 }
 
+export interface ProductVariant {
+  id: number;
+  product_id: number;
+  variant_name: string;
+  color?: string;
+  size?: string;
+  pattern?: string;
+  material?: string;
+  brand?: string;
+  sku: string;
+  barcode?: string;
+  purchase_price: number;
+  selling_price: number;
+  gst_rate: number;
+  stock_quantity: number;
+  min_stock_alert: number;
+  status: 'active' | 'inactive';
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface Supplier {
+  id: number;
+  name: string;
+  company_name?: string;
+  phone?: string;
+  email?: string;
+  address?: string;
+  city?: string;
+  state?: string;
+  state_code?: string;
+  gstin?: string;
+  payment_terms?: string;
+  total_purchases: number;
+  total_paid: number;
+  outstanding_balance: number;
+  status: 'active' | 'inactive';
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface PurchaseItem {
+  id?: number;
+  purchase_id?: number;
+  product_id?: number;
+  variant_id?: number;
+  product_name: string;
+  sku?: string;
+  hsn_code?: string;
+  unit: TextileUnit;
+  quantity: number;
+  purchase_cost: number;
+  discount_percent: number;
+  gst_rate: number;
+  tax_amount: number;
+  total_cost: number;
+}
+
+export interface PurchaseInvoice {
+  id: number;
+  purchase_invoice_number: string;
+  purchase_date: string;
+  supplier_id?: number;
+  supplier_name: string;
+  supplier_gstin?: string;
+  total_items_count: number;
+  subtotal: number;
+  tax_amount: number;
+  discount_amount: number;
+  additional_charges: number;
+  grand_total: number;
+  amount_paid: number;
+  balance_due: number;
+  payment_status: 'paid' | 'partial' | 'unpaid';
+  payment_method: string;
+  status: 'active' | 'cancelled' | 'returned';
+  notes?: string;
+  created_by_user_id?: number;
+  created_at?: string;
+  items?: PurchaseItem[];
+  payments?: any[];
+  supplier_phone?: string;
+  company_name?: string;
+}
+
+export interface ReturnItem {
+  id?: number;
+  return_id?: number;
+  invoice_item_id?: number;
+  product_id?: number;
+  variant_id?: number;
+  product_name: string;
+  sku?: string;
+  unit: string;
+  quantity_returned: number;
+  rate: number;
+  gst_rate: number;
+  tax_reversed: number;
+  item_refund_amount: number;
+  condition: 'undamaged' | 'damaged';
+  restocked: number;
+}
+
+export interface ReturnTransaction {
+  id: number;
+  return_number: string;
+  return_date: string;
+  return_time?: string;
+  invoice_id: number;
+  invoice_number: string;
+  customer_id?: number;
+  customer_name?: string;
+  customer_phone?: string;
+  return_type: 'return' | 'exchange';
+  total_return_items: number;
+  total_return_amount: number;
+  total_tax_reversed: number;
+  cgst_reversed: number;
+  sgst_reversed: number;
+  igst_reversed: number;
+  exchange_invoice_id?: number;
+  exchange_items_amount: number;
+  net_amount_payable: number;
+  refund_method: string;
+  refund_status: string;
+  reason: string;
+  condition: 'undamaged' | 'damaged';
+  restocked: number;
+  notes?: string;
+  handled_by_name?: string;
+  created_at?: string;
+  items?: ReturnItem[];
+  invoice?: Invoice;
+  shop?: ShopSettings;
+}
+
+export interface CustomerLedgerEntry {
+  id: string;
+  type: 'invoice' | 'payment';
+  date: string;
+  time?: string;
+  reference: string;
+  description: string;
+  debit: number;
+  credit: number;
+  net_due: number;
+  running_balance?: number;
+  payment_method?: string;
+  payment_status?: string;
+}
+
+export interface CustomerPaymentReceipt {
+  receipt_number: string;
+  payment_id: number;
+  date: string;
+  amount: number;
+  payment_method: string;
+  reference_number?: string;
+  notes?: string;
+  customer_name: string;
+  customer_phone?: string;
+  balance_before: number;
+  balance_after: number;
+  received_by?: string;
+  shop?: ShopSettings;
+}
+
 export interface Product {
   id: number;
   name: string;
@@ -71,6 +238,14 @@ export interface Product {
   supplier?: string;
   description?: string;
   status: 'active' | 'inactive';
+  has_variants?: number | boolean;
+  variants_count?: number;
+  brand?: string;
+  color?: string;
+  size?: string;
+  variant_id?: number;
+  variant_name?: string;
+  is_variant?: boolean;
   created_at?: string;
   updated_at?: string;
 }
@@ -97,12 +272,15 @@ export interface InvoiceItem {
   id?: number;
   invoice_id?: number;
   product_id?: number;
+  variant_id?: number;
+  variant_name?: string;
   product_name: string;
   sku?: string;
   hsn_code: string;
   category_name?: string;
   unit: TextileUnit;
   quantity: number;
+  returned_quantity?: number;
   rate: number;
   discount_type: 'flat' | 'percent';
   discount_value: number;
@@ -201,6 +379,7 @@ export interface Invoice {
   refunds?: RefundRecord[];
   shop?: ShopSettings;
   amount_in_words?: string;
+  whatsapp_sent_at?: string;
   created_at?: string;
 }
 

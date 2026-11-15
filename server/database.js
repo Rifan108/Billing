@@ -265,6 +265,157 @@ function initDatabase() {
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
 
+    -- Suppliers Management
+    CREATE TABLE IF NOT EXISTS suppliers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      company_name TEXT,
+      phone TEXT,
+      email TEXT,
+      address TEXT,
+      city TEXT,
+      state TEXT,
+      state_code TEXT,
+      gstin TEXT,
+      payment_terms TEXT DEFAULT '30 Days Net',
+      total_purchases REAL DEFAULT 0.0,
+      total_paid REAL DEFAULT 0.0,
+      outstanding_balance REAL DEFAULT 0.0,
+      status TEXT DEFAULT 'active' CHECK(status IN ('active', 'inactive')),
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Purchases & Stock Inward
+    CREATE TABLE IF NOT EXISTS purchases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      purchase_invoice_number TEXT NOT NULL,
+      purchase_date TEXT NOT NULL,
+      supplier_id INTEGER REFERENCES suppliers(id),
+      supplier_name TEXT NOT NULL,
+      supplier_gstin TEXT,
+      total_items_count INTEGER NOT NULL,
+      subtotal REAL NOT NULL,
+      tax_amount REAL NOT NULL DEFAULT 0.0,
+      discount_amount REAL NOT NULL DEFAULT 0.0,
+      additional_charges REAL NOT NULL DEFAULT 0.0,
+      grand_total REAL NOT NULL,
+      amount_paid REAL NOT NULL DEFAULT 0.0,
+      balance_due REAL NOT NULL DEFAULT 0.0,
+      payment_status TEXT NOT NULL CHECK(payment_status IN ('paid', 'partial', 'unpaid')),
+      payment_method TEXT DEFAULT 'bank_transfer',
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'cancelled', 'returned')),
+      notes TEXT,
+      created_by_user_id INTEGER REFERENCES users(id),
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Purchase Items
+    CREATE TABLE IF NOT EXISTS purchase_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      purchase_id INTEGER NOT NULL REFERENCES purchases(id) ON DELETE CASCADE,
+      product_id INTEGER REFERENCES products(id),
+      variant_id INTEGER,
+      product_name TEXT NOT NULL,
+      sku TEXT,
+      hsn_code TEXT,
+      unit TEXT NOT NULL,
+      quantity REAL NOT NULL,
+      purchase_cost REAL NOT NULL,
+      discount_percent REAL DEFAULT 0.0,
+      gst_rate REAL NOT NULL DEFAULT 5.0,
+      tax_amount REAL NOT NULL DEFAULT 0.0,
+      total_cost REAL NOT NULL
+    );
+
+    -- Supplier Payments
+    CREATE TABLE IF NOT EXISTS supplier_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      supplier_id INTEGER NOT NULL REFERENCES suppliers(id),
+      purchase_id INTEGER REFERENCES purchases(id),
+      payment_date TEXT NOT NULL,
+      payment_method TEXT NOT NULL,
+      amount REAL NOT NULL,
+      reference_number TEXT,
+      notes TEXT,
+      paid_by_user_id INTEGER REFERENCES users(id),
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Product Variants
+    CREATE TABLE IF NOT EXISTS product_variants (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+      variant_name TEXT NOT NULL,
+      color TEXT,
+      size TEXT,
+      pattern TEXT,
+      material TEXT,
+      brand TEXT,
+      sku TEXT UNIQUE NOT NULL,
+      barcode TEXT UNIQUE,
+      purchase_price REAL NOT NULL DEFAULT 0.0,
+      selling_price REAL NOT NULL DEFAULT 0.0,
+      gst_rate REAL NOT NULL DEFAULT 5.0,
+      stock_quantity REAL NOT NULL DEFAULT 0.0,
+      min_stock_alert REAL NOT NULL DEFAULT 5.0,
+      status TEXT DEFAULT 'active' CHECK(status IN ('active', 'inactive')),
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Sales Returns & Exchanges
+    CREATE TABLE IF NOT EXISTS returns (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      return_number TEXT UNIQUE NOT NULL,
+      return_date TEXT NOT NULL,
+      return_time TEXT,
+      invoice_id INTEGER NOT NULL REFERENCES invoices(id),
+      invoice_number TEXT NOT NULL,
+      customer_id INTEGER REFERENCES customers(id),
+      customer_name TEXT,
+      customer_phone TEXT,
+      return_type TEXT NOT NULL CHECK(return_type IN ('return', 'exchange')),
+      total_return_items INTEGER NOT NULL,
+      total_return_amount REAL NOT NULL,
+      total_tax_reversed REAL NOT NULL DEFAULT 0.0,
+      cgst_reversed REAL DEFAULT 0.0,
+      sgst_reversed REAL DEFAULT 0.0,
+      igst_reversed REAL DEFAULT 0.0,
+      exchange_invoice_id INTEGER REFERENCES invoices(id),
+      exchange_items_amount REAL DEFAULT 0.0,
+      net_amount_payable REAL DEFAULT 0.0,
+      refund_method TEXT DEFAULT 'cash',
+      refund_status TEXT DEFAULT 'completed',
+      reason TEXT NOT NULL,
+      condition TEXT DEFAULT 'undamaged' CHECK(condition IN ('undamaged', 'damaged')),
+      restocked INTEGER DEFAULT 1,
+      notes TEXT,
+      handled_by_user_id INTEGER REFERENCES users(id),
+      handled_by_name TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Return Items
+    CREATE TABLE IF NOT EXISTS return_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      return_id INTEGER NOT NULL REFERENCES returns(id) ON DELETE CASCADE,
+      invoice_item_id INTEGER REFERENCES invoice_items(id),
+      product_id INTEGER REFERENCES products(id),
+      variant_id INTEGER REFERENCES product_variants(id),
+      product_name TEXT NOT NULL,
+      sku TEXT,
+      unit TEXT NOT NULL,
+      quantity_returned REAL NOT NULL,
+      rate REAL NOT NULL,
+      gst_rate REAL NOT NULL,
+      tax_reversed REAL NOT NULL,
+      item_refund_amount REAL NOT NULL,
+      condition TEXT DEFAULT 'undamaged',
+      restocked INTEGER DEFAULT 1
+    );
+
     -- Indices for blazing performance
     CREATE INDEX IF NOT EXISTS idx_invoices_date ON invoices(invoice_date);
     CREATE INDEX IF NOT EXISTS idx_invoices_customer ON invoices(customer_id);
@@ -272,6 +423,13 @@ function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice ON invoice_items(invoice_id);
     CREATE INDEX IF NOT EXISTS idx_products_sku ON products(sku);
     CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode);
+    CREATE INDEX IF NOT EXISTS idx_variants_product ON product_variants(product_id);
+    CREATE INDEX IF NOT EXISTS idx_variants_sku ON product_variants(sku);
+    CREATE INDEX IF NOT EXISTS idx_variants_barcode ON product_variants(barcode);
+    CREATE INDEX IF NOT EXISTS idx_suppliers_name ON suppliers(name);
+    CREATE INDEX IF NOT EXISTS idx_purchases_supplier ON purchases(supplier_id);
+    CREATE INDEX IF NOT EXISTS idx_purchases_date ON purchases(purchase_date);
+    CREATE INDEX IF NOT EXISTS idx_returns_invoice ON returns(invoice_id);
     CREATE INDEX IF NOT EXISTS idx_inventory_product ON inventory_transactions(product_id);
     CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(expense_date);
     CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at);
@@ -301,6 +459,37 @@ function initDatabase() {
     if (!currentShop.qr_mode) {
       db.prepare("UPDATE shop_settings SET qr_mode = 'dynamic' WHERE id = 1").run();
     }
+  }
+
+  // Column migrations for Advanced Retail Management
+  const prodCols = db.prepare('PRAGMA table_info(products)').all().map(c => c.name);
+  if (!prodCols.includes('has_variants')) {
+    db.exec("ALTER TABLE products ADD COLUMN has_variants INTEGER DEFAULT 0");
+  }
+  if (!prodCols.includes('brand')) {
+    db.exec("ALTER TABLE products ADD COLUMN brand TEXT");
+  }
+  if (!prodCols.includes('color')) {
+    db.exec("ALTER TABLE products ADD COLUMN color TEXT");
+  }
+  if (!prodCols.includes('size')) {
+    db.exec("ALTER TABLE products ADD COLUMN size TEXT");
+  }
+
+  const invItemCols = db.prepare('PRAGMA table_info(invoice_items)').all().map(c => c.name);
+  if (!invItemCols.includes('variant_id')) {
+    db.exec("ALTER TABLE invoice_items ADD COLUMN variant_id INTEGER");
+  }
+  if (!invItemCols.includes('variant_name')) {
+    db.exec("ALTER TABLE invoice_items ADD COLUMN variant_name TEXT");
+  }
+  if (!invItemCols.includes('returned_quantity')) {
+    db.exec("ALTER TABLE invoice_items ADD COLUMN returned_quantity REAL DEFAULT 0.0");
+  }
+
+  const invCols = db.prepare('PRAGMA table_info(invoices)').all().map(c => c.name);
+  if (!invCols.includes('whatsapp_sent_at')) {
+    db.exec("ALTER TABLE invoices ADD COLUMN whatsapp_sent_at TEXT");
   }
 
   seedInitialData();
@@ -639,6 +828,169 @@ function seedInitialData() {
       VALUES (@category, @title, @amount, @expense_date, @payment_method, @receipt_number, @notes)
     `);
     for (const exp of expenses) insertExp.run(exp);
+  }
+
+  // Seed initial sample Suppliers
+  const supplierCount = db.prepare('SELECT count(*) as count FROM suppliers').get().count;
+  if (supplierCount === 0) {
+    const suppliers = [
+      {
+        name: 'Sri Murugan Weavers',
+        company_name: 'Sri Murugan Silk Weavers Co-op Society',
+        phone: '9443211234',
+        email: 'murugan.weavers@gmail.com',
+        address: '124, Gandhi Road, Weavers Colony',
+        city: 'Kanchipuram',
+        state: 'Tamil Nadu',
+        state_code: '33',
+        gstin: '33AABCS1234F1Z1',
+        payment_terms: '30 Days Net',
+        total_purchases: 156000.0,
+        total_paid: 120000.0,
+        outstanding_balance: 36000.0
+      },
+      {
+        name: 'Arvind Mills Garments',
+        company_name: 'Arvind Lifestyle Textiles Ltd',
+        phone: '9825012345',
+        email: 'b2b.sales@arvindmills.com',
+        address: 'Plot 45, Naroda Industrial Estate',
+        city: 'Ahmedabad',
+        state: 'Gujarat',
+        state_code: '24',
+        gstin: '24AAACA1234E1Z3',
+        payment_terms: '45 Days Net',
+        total_purchases: 85000.0,
+        total_paid: 85000.0,
+        outstanding_balance: 0.0
+      },
+      {
+        name: 'Varanasi Weavers Co-op',
+        company_name: 'Kashi Brocade Handloom Guild',
+        phone: '9415098765',
+        email: 'kashibrocade@rediffmail.com',
+        address: 'B-14, Madanpura Silk Market',
+        city: 'Varanasi',
+        state: 'Uttar Pradesh',
+        state_code: '09',
+        gstin: '09AAABK5678H1Z8',
+        payment_terms: '15 Days Net',
+        total_purchases: 110000.0,
+        total_paid: 80000.0,
+        outstanding_balance: 30000.0
+      },
+      {
+        name: 'Tirupur Knitwear Hub',
+        company_name: 'Apex Cotton Hosiery Exports',
+        phone: '9843054321',
+        email: 'orders@apexhosiery.in',
+        address: '88, Avinashi Road',
+        city: 'Tirupur',
+        state: 'Tamil Nadu',
+        state_code: '33',
+        gstin: '33AABCA9876K1Z0',
+        payment_terms: 'Immediate / COD',
+        total_purchases: 45000.0,
+        total_paid: 45000.0,
+        outstanding_balance: 0.0
+      }
+    ];
+
+    const insertSup = db.prepare(`
+      INSERT INTO suppliers (name, company_name, phone, email, address, city, state, state_code, gstin, payment_terms, total_purchases, total_paid, outstanding_balance)
+      VALUES (@name, @company_name, @phone, @email, @address, @city, @state, @state_code, @gstin, @payment_terms, @total_purchases, @total_paid, @outstanding_balance)
+    `);
+    const insertManySuppliers = db.transaction((sups) => {
+      for (const s of sups) insertSup.run(s);
+    });
+    insertManySuppliers(suppliers);
+  }
+
+  // Seed sample variants for Shirt (Product 3) if variants table is empty
+  const variantCount = db.prepare('SELECT count(*) as count FROM product_variants').get().count;
+  if (variantCount === 0) {
+    const shirtProd = db.prepare("SELECT id FROM products WHERE sku = 'SHT-COT-003'").get();
+    if (shirtProd) {
+      db.prepare("UPDATE products SET has_variants = 1 WHERE id = ?").run(shirtProd.id);
+
+      const variants = [
+        {
+          product_id: shirtProd.id,
+          variant_name: 'Sky Blue - Size 38 (M)',
+          color: 'Sky Blue',
+          size: '38 (M)',
+          pattern: 'Plain Solid',
+          material: 'Pure Cotton',
+          brand: 'Sri Lakshmi Classic',
+          sku: 'SHT-COT-003-BLU-38',
+          barcode: '890123400338',
+          purchase_price: 550.0,
+          selling_price: 999.0,
+          gst_rate: 5.0,
+          stock_quantity: 20.0,
+          min_stock_alert: 5.0
+        },
+        {
+          product_id: shirtProd.id,
+          variant_name: 'Sky Blue - Size 40 (L)',
+          color: 'Sky Blue',
+          size: '40 (L)',
+          pattern: 'Plain Solid',
+          material: 'Pure Cotton',
+          brand: 'Sri Lakshmi Classic',
+          sku: 'SHT-COT-003-BLU-40',
+          barcode: '890123400340',
+          purchase_price: 550.0,
+          selling_price: 999.0,
+          gst_rate: 5.0,
+          stock_quantity: 25.0,
+          min_stock_alert: 5.0
+        },
+        {
+          product_id: shirtProd.id,
+          variant_name: 'Sky Blue - Size 42 (XL)',
+          color: 'Sky Blue',
+          size: '42 (XL)',
+          pattern: 'Plain Solid',
+          material: 'Pure Cotton',
+          brand: 'Sri Lakshmi Classic',
+          sku: 'SHT-COT-003-BLU-42',
+          barcode: '890123400342',
+          purchase_price: 550.0,
+          selling_price: 999.0,
+          gst_rate: 5.0,
+          stock_quantity: 15.0,
+          min_stock_alert: 3.0
+        },
+        {
+          product_id: shirtProd.id,
+          variant_name: 'Crisp White - Size 40 (L)',
+          color: 'Crisp White',
+          size: '40 (L)',
+          pattern: 'Plain Solid',
+          material: 'Pure Cotton',
+          brand: 'Sri Lakshmi Classic',
+          sku: 'SHT-COT-003-WHT-40',
+          barcode: '890123400344',
+          purchase_price: 550.0,
+          selling_price: 999.0,
+          gst_rate: 5.0,
+          stock_quantity: 20.0,
+          min_stock_alert: 5.0
+        }
+      ];
+
+      const insertVar = db.prepare(`
+        INSERT INTO product_variants (
+          product_id, variant_name, color, size, pattern, material, brand,
+          sku, barcode, purchase_price, selling_price, gst_rate, stock_quantity, min_stock_alert
+        ) VALUES (
+          @product_id, @variant_name, @color, @size, @pattern, @material, @brand,
+          @sku, @barcode, @purchase_price, @selling_price, @gst_rate, @stock_quantity, @min_stock_alert
+        )
+      `);
+      for (const v of variants) insertVar.run(v);
+    }
   }
 }
 

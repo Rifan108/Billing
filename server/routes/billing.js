@@ -5,7 +5,7 @@ const { requireAuth } = require('../middleware/auth');
 const { calculateInvoiceTotals, numberToWordsINR, getStateByName } = require('../services/gstEngine');
 const { logAudit } = require('../services/auditService');
 
-// Quick search products for billing
+// Quick search products for billing (includes variants)
 router.get('/search-products', (req, res) => {
   const { q } = req.query;
   if (!q || !q.trim()) {
@@ -24,7 +24,7 @@ router.get('/search-products', (req, res) => {
   const term = `%${q.trim()}%`;
   const exact = q.trim();
 
-  // Search by exact barcode or SKU first, then by name
+  // 1. Search products
   const products = db.prepare(`
     SELECT p.*, c.name as category_display_name
     FROM products p
@@ -36,10 +36,110 @@ router.get('/search-products', (req, res) => {
            WHEN lower(p.sku) = lower(?) THEN 2
            ELSE 3 END,
       p.name ASC
-    LIMIT 30
+    LIMIT 25
   `).all(exact, exact, term, term, exact, exact);
 
-  res.json(products);
+  // 2. Search variants
+  const variants = db.prepare(`
+    SELECT v.id as variant_id, v.product_id, v.variant_name, v.sku as variant_sku,
+           v.barcode as variant_barcode, v.selling_price, v.stock_quantity, v.gst_rate,
+           p.name as parent_name, p.hsn_code, p.unit, p.is_tax_inclusive, c.name as category_display_name
+    FROM product_variants v
+    JOIN products p ON v.product_id = p.id
+    LEFT JOIN categories c ON p.category_id = c.id
+    WHERE v.status = 'active' AND p.status = 'active'
+      AND (v.barcode = ? OR lower(v.sku) = lower(?) OR v.variant_name LIKE ? OR p.name LIKE ?)
+    LIMIT 15
+  `).all(exact, exact, term, term);
+
+  const formattedVariants = variants.map(v => ({
+    id: v.product_id,
+    variant_id: v.variant_id,
+    name: `${v.parent_name} (${v.variant_name})`,
+    parent_name: v.parent_name,
+    variant_name: v.variant_name,
+    sku: v.variant_sku,
+    barcode: v.variant_barcode,
+    selling_price: v.selling_price,
+    stock_quantity: v.stock_quantity,
+    gst_rate: v.gst_rate,
+    unit: v.unit,
+    hsn_code: v.hsn_code,
+    is_tax_inclusive: Boolean(v.is_tax_inclusive),
+    category_display_name: v.category_display_name,
+    is_variant: true
+  }));
+
+  // Prioritize exact matches
+  const combined = [...products, ...formattedVariants].slice(0, 35);
+  res.json(combined);
+});
+
+// Fast Barcode Scanner Lookup endpoint
+router.get('/barcode-scan', (req, res) => {
+  const { barcode } = req.query;
+  if (!barcode || !barcode.trim()) {
+    return res.status(400).json({ error: 'Barcode is required' });
+  }
+
+  const code = barcode.trim();
+
+  // 1. Check Product Variants by Barcode or exact SKU
+  const variant = db.prepare(`
+    SELECT v.id as variant_id, v.product_id, v.variant_name, v.sku as variant_sku,
+           v.barcode as variant_barcode, v.selling_price, v.stock_quantity, v.gst_rate,
+           p.name as parent_name, p.hsn_code, p.unit, p.is_tax_inclusive, c.name as category_display_name
+    FROM product_variants v
+    JOIN products p ON v.product_id = p.id
+    LEFT JOIN categories c ON p.category_id = c.id
+    WHERE v.status = 'active' AND p.status = 'active'
+      AND (v.barcode = ? OR lower(v.sku) = lower(?))
+  `).get(code, code);
+
+  if (variant) {
+    return res.json({
+      found: true,
+      product: {
+        id: variant.product_id,
+        variant_id: variant.variant_id,
+        name: `${variant.parent_name} (${variant.variant_name})`,
+        parent_name: variant.parent_name,
+        variant_name: variant.variant_name,
+        sku: variant.variant_sku,
+        barcode: variant.variant_barcode,
+        selling_price: variant.selling_price,
+        stock_quantity: variant.stock_quantity,
+        gst_rate: variant.gst_rate,
+        unit: variant.unit,
+        hsn_code: variant.hsn_code,
+        is_tax_inclusive: Boolean(variant.is_tax_inclusive),
+        category_display_name: variant.category_display_name,
+        is_variant: true
+      }
+    });
+  }
+
+  // 2. Check Parent Products by Barcode or exact SKU
+  const product = db.prepare(`
+    SELECT p.*, c.name as category_display_name
+    FROM products p
+    LEFT JOIN categories c ON p.category_id = c.id
+    WHERE p.status = 'active'
+      AND (p.barcode = ? OR lower(p.sku) = lower(?))
+  `).get(code, code);
+
+  if (product) {
+    return res.json({
+      found: true,
+      product: {
+        ...product,
+        variant_id: null,
+        variant_name: null
+      }
+    });
+  }
+
+  return res.json({ found: false, barcode: code, message: `No active product found for barcode ${code}` });
 });
 
 // Quick search customers for billing
@@ -219,12 +319,12 @@ router.post('/create-invoice', requireAuth, (req, res) => {
     // Insert Line Items & Deduct Stock
     const insertItem = db.prepare(`
       INSERT INTO invoice_items (
-        invoice_id, product_id, product_name, sku, hsn_code, category_name,
+        invoice_id, product_id, variant_id, variant_name, product_name, sku, hsn_code, category_name,
         unit, quantity, rate, discount_type, discount_value, discount_amount,
         taxable_amount, gst_rate, is_inter_state, cgst_rate, cgst_amount,
         sgst_rate, sgst_amount, igst_rate, igst_amount, total_tax, final_amount
       ) VALUES (
-        ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?
@@ -233,6 +333,12 @@ router.post('/create-invoice', requireAuth, (req, res) => {
 
     const updateProductStock = db.prepare(`
       UPDATE products
+      SET stock_quantity = stock_quantity - ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `);
+
+    const updateVariantStock = db.prepare(`
+      UPDATE product_variants
       SET stock_quantity = stock_quantity - ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `);
@@ -248,6 +354,8 @@ router.post('/create-invoice', requireAuth, (req, res) => {
       insertItem.run(
         createdInvoiceId,
         item.product_id || null,
+        item.variant_id || null,
+        item.variant_name || null,
         item.name || item.product_name,
         item.sku || '',
         item.hsn_code || '5208',
@@ -271,6 +379,11 @@ router.post('/create-invoice', requireAuth, (req, res) => {
         item.finalAmount
       );
 
+      // Decrement variant stock if linked to a variant
+      if (item.variant_id) {
+        updateVariantStock.run(item.quantity, item.variant_id);
+      }
+
       // Decrement inventory if linked to a product
       if (item.product_id) {
         const prod = db.prepare('SELECT stock_quantity, name, unit FROM products WHERE id = ?').get(item.product_id);
@@ -280,7 +393,7 @@ router.post('/create-invoice', requireAuth, (req, res) => {
           updateProductStock.run(item.quantity, item.product_id);
           insertTxn.run(
             item.product_id,
-            prod.name,
+            prod.name + (item.variant_name ? ` (${item.variant_name})` : ''),
             -item.quantity,
             qtyBefore,
             qtyAfter,

@@ -12,7 +12,8 @@ import {
   AlertCircle,
   FileSpreadsheet,
   CheckCircle2,
-  RefreshCw
+  RefreshCw,
+  MessageCircle
 } from 'lucide-react';
 import api from '../services/api';
 import { Invoice } from '../types';
@@ -428,6 +429,30 @@ export const BillingHistoryPage: React.FC<BillingHistoryPageProps> = ({ onViewIn
                           title="Reprint Thermal Receipt (Auto-print to POS Roll Printer)"
                         >
                           <Printer className="w-4 h-4" />
+                        </button>
+
+                        {/* WhatsApp Share */}
+                        <button
+                          onClick={async () => {
+                            let phone = inv.customer_phone || '';
+                            if (!phone) {
+                              const input = prompt('Enter customer 10-digit mobile number for WhatsApp sharing:');
+                              if (!input) return;
+                              phone = input.trim();
+                            }
+                            try {
+                              const res = await api.get(`/invoices/${inv.id}/whatsapp?phone=${encodeURIComponent(phone)}`);
+                              if (res.data?.whatsappUrl) {
+                                window.open(res.data.whatsappUrl, '_blank');
+                              }
+                            } catch (e) {
+                              alert('Could not generate WhatsApp share link.');
+                            }
+                          }}
+                          className="p-1.5 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 rounded-lg transition-colors"
+                          title="Share Invoice on WhatsApp"
+                        >
+                          <MessageCircle className="w-4 h-4" />
                         </button>
 
                         {/* Collect Payment (if balance due) */}

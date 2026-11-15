@@ -4,6 +4,165 @@ const xlsx = require('xlsx');
 const db = require('../database');
 const { requireAuth } = require('../middleware/auth');
 
+// Advanced Sales Analytics with Profit & Loss and Inventory performance
+router.get('/advanced-analytics', (req, res) => {
+  const { preset = 'monthly', start_date, end_date } = req.query;
+
+  const today = new Date().toISOString().split('T')[0];
+  const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+
+  let rangeStart = start_date;
+  let rangeEnd = end_date || today;
+
+  if (preset === 'today') {
+    rangeStart = today;
+    rangeEnd = today;
+  } else if (preset === 'yesterday') {
+    rangeStart = yesterday;
+    rangeEnd = yesterday;
+  } else if (preset === 'weekly') {
+    rangeStart = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0];
+    rangeEnd = today;
+  } else if (preset === 'monthly') {
+    rangeStart = new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0];
+    rangeEnd = today;
+  } else if (preset === 'yearly') {
+    rangeStart = `${new Date().getFullYear()}-01-01`;
+    rangeEnd = today;
+  }
+
+  // 1. Overall Sales Financials
+  const salesSummary = db.prepare(`
+    SELECT
+      count(*) as total_invoices,
+      coalesce(sum(grand_total), 0) as gross_sales,
+      coalesce(sum(total_taxable_amount), 0) as taxable_sales,
+      coalesce(sum(total_tax_amount), 0) as gst_collected,
+      coalesce(sum(total_cgst), 0) as total_cgst,
+      coalesce(sum(total_sgst), 0) as total_sgst,
+      coalesce(sum(total_igst), 0) as total_igst,
+      coalesce(sum(total_product_discount + total_bill_discount), 0) as total_discounts,
+      coalesce(sum(amount_paid), 0) as total_collected,
+      coalesce(sum(balance_due), 0) as pending_dues,
+      coalesce(avg(grand_total), 0) as avg_invoice_value
+    FROM invoices
+    WHERE status != 'cancelled' AND invoice_date BETWEEN ? AND ?
+  `).get(rangeStart, rangeEnd);
+
+  // 2. Cost of Goods Sold & Gross Profit
+  const cogsData = db.prepare(`
+    SELECT
+      coalesce(sum(ii.quantity * coalesce(p.purchase_price, 0)), 0) as total_cost,
+      coalesce(sum(ii.final_amount), 0) as total_rev
+    FROM invoice_items ii
+    JOIN invoices i ON ii.invoice_id = i.id
+    LEFT JOIN products p ON ii.product_id = p.id
+    WHERE i.status != 'cancelled' AND i.invoice_date BETWEEN ? AND ?
+  `).get(rangeStart, rangeEnd);
+
+  const estimatedGrossProfit = Math.max(0, Math.round((cogsData.total_rev - cogsData.total_cost) * 100) / 100);
+
+  // 3. Operating Expenses in this period
+  const expensesData = db.prepare(`
+    SELECT coalesce(sum(amount), 0) as total_expenses
+    FROM expenses
+    WHERE expense_date BETWEEN ? AND ?
+  `).get(rangeStart, rangeEnd);
+
+  const totalExpenses = expensesData.total_expenses;
+  const estimatedNetProfit = Math.round((estimatedGrossProfit - totalExpenses) * 100) / 100;
+
+  // 4. Customer Outstanding Balance (Global)
+  const outstandingData = db.prepare('SELECT coalesce(sum(outstanding_balance), 0) as total_khata_outstanding FROM customers').get();
+
+  // 5. Best-Selling Products
+  const bestSellers = db.prepare(`
+    SELECT
+      ii.product_name,
+      ii.unit,
+      coalesce(sum(ii.quantity), 0) as qty_sold,
+      coalesce(sum(ii.final_amount), 0) as revenue,
+      coalesce(sum(ii.final_amount - (ii.quantity * coalesce(p.purchase_price, 0))), 0) as item_profit
+    FROM invoice_items ii
+    JOIN invoices i ON ii.invoice_id = i.id
+    LEFT JOIN products p ON ii.product_id = p.id
+    WHERE i.status != 'cancelled' AND i.invoice_date BETWEEN ? AND ?
+    GROUP BY ii.product_name
+    ORDER BY revenue DESC
+    LIMIT 6
+  `).all(rangeStart, rangeEnd);
+
+  // 6. Slow-Moving Products (Products with 0 or least sales)
+  const slowMovers = db.prepare(`
+    SELECT
+      p.id, p.name, p.sku, p.stock_quantity, p.unit, p.selling_price,
+      coalesce(sum(ii.quantity), 0) as qty_sold_period
+    FROM products p
+    LEFT JOIN invoice_items ii ON ii.product_id = p.id
+    LEFT JOIN invoices i ON ii.invoice_id = i.id AND i.status != 'cancelled' AND i.invoice_date BETWEEN ? AND ?
+    WHERE p.status = 'active'
+    GROUP BY p.id
+    ORDER BY qty_sold_period ASC, p.stock_quantity DESC
+    LIMIT 6
+  `).all(rangeStart, rangeEnd);
+
+  // 7. Top Categories
+  const categoryBreakdown = db.prepare(`
+    SELECT
+      coalesce(ii.category_name, 'Other') as category_name,
+      coalesce(sum(ii.final_amount), 0) as total_revenue,
+      coalesce(sum(ii.quantity), 0) as total_units
+    FROM invoice_items ii
+    JOIN invoices i ON ii.invoice_id = i.id
+    WHERE i.status != 'cancelled' AND i.invoice_date BETWEEN ? AND ?
+    GROUP BY ii.category_name
+    ORDER BY total_revenue DESC
+  `).all(rangeStart, rangeEnd);
+
+  // 8. Payment Method Breakdown
+  const paymentBreakdown = db.prepare(`
+    SELECT
+      payment_method,
+      count(*) as invoice_count,
+      coalesce(sum(amount_paid), 0) as total_paid,
+      coalesce(sum(balance_due), 0) as total_credit
+    FROM invoices
+    WHERE status != 'cancelled' AND invoice_date BETWEEN ? AND ?
+    GROUP BY payment_method
+    ORDER BY total_paid DESC
+  `).all(rangeStart, rangeEnd);
+
+  // 9. Daily Sales Trends in Range
+  const dailyTrends = db.prepare(`
+    SELECT
+      invoice_date as date,
+      coalesce(sum(grand_total), 0) as sales,
+      coalesce(sum(total_tax_amount), 0) as gst,
+      count(*) as invoices
+    FROM invoices
+    WHERE status != 'cancelled' AND invoice_date BETWEEN ? AND ?
+    GROUP BY invoice_date
+    ORDER BY invoice_date ASC
+  `).all(rangeStart, rangeEnd);
+
+  res.json({
+    date_range: { start_date: rangeStart, end_date: rangeEnd, preset },
+    overview: {
+      ...salesSummary,
+      cost_of_goods: cogsData.total_cost,
+      gross_profit: estimatedGrossProfit,
+      total_expenses: totalExpenses,
+      net_profit: estimatedNetProfit,
+      customer_khata_outstanding: outstandingData.total_khata_outstanding
+    },
+    best_sellers: bestSellers,
+    slow_movers: slowMovers,
+    categories: categoryBreakdown,
+    payments: paymentBreakdown,
+    trends: dailyTrends
+  });
+});
+
 // Generic Sales & Analytical reports
 router.get('/sales', (req, res) => {
   const { type = 'daily', start_date, end_date } = req.query;

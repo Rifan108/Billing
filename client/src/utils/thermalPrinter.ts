@@ -342,7 +342,7 @@ export function generateThermalReceiptHtml({
       ${items.map(item => `
         <tr>
           <td colspan="4" class="bold" style="padding-top: 2px;">
-            ${item.product_name}
+            ${item.product_name}${item.variant_name ? ` <span style="font-weight: normal; font-size: ${fontSizeSub};">(${item.variant_name})</span>` : ''}
           </td>
         </tr>
         <tr>

@@ -128,6 +128,91 @@ router.put('/:id', requireAuth, (req, res) => {
   res.json(updated);
 });
 
+// Customer Khata Ledger with running balance & date filter
+router.get('/:id/ledger', (req, res) => {
+  const { id } = req.params;
+  const { start_date, end_date } = req.query;
+
+  const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(id);
+  if (!customer) return res.status(404).json({ error: 'Customer not found' });
+
+  const shop = db.prepare('SELECT * FROM shop_settings WHERE id = 1').get();
+
+  let invQuery = `SELECT * FROM invoices WHERE customer_id = ? AND status != 'cancelled'`;
+  const invParams = [id];
+  let payQuery = `SELECT p.*, i.invoice_number FROM payments p LEFT JOIN invoices i ON p.invoice_id = i.id WHERE p.customer_id = ?`;
+  const payParams = [id];
+
+  if (start_date && end_date) {
+    invQuery += ` AND invoice_date BETWEEN ? AND ?`;
+    invParams.push(start_date, end_date);
+    payQuery += ` AND payment_date BETWEEN ? AND ?`;
+    payParams.push(start_date, end_date);
+  }
+
+  const invoices = db.prepare(invQuery).all(...invParams);
+  const payments = db.prepare(payQuery).all(...payParams);
+
+  // Combine into unified ledger entries
+  const entries = [];
+
+  for (const inv of invoices) {
+    entries.push({
+      id: `inv-${inv.id}`,
+      type: 'invoice',
+      date: inv.invoice_date,
+      time: inv.invoice_time || '',
+      reference: inv.invoice_number,
+      description: `Sales Bill #${inv.invoice_number} (${inv.total_items_count} items)`,
+      debit: inv.grand_total,
+      credit: inv.amount_paid,
+      net_due: inv.balance_due,
+      payment_method: inv.payment_method,
+      payment_status: inv.payment_status
+    });
+  }
+
+  for (const pay of payments) {
+    if (!pay.invoice_id) {
+      entries.push({
+        id: `pay-${pay.id}`,
+        type: 'payment',
+        date: pay.payment_date,
+        time: '',
+        reference: pay.reference_number || `PAY-${pay.id}`,
+        description: `Khata Settlement (${pay.notes || 'Customer payment'})`,
+        debit: 0,
+        credit: pay.amount,
+        net_due: 0,
+        payment_method: pay.payment_method,
+        payment_status: 'paid'
+      });
+    }
+  }
+
+  // Sort chronological
+  entries.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+
+  // Calculate running balance
+  let runningBalance = 0;
+  for (const entry of entries) {
+    runningBalance = Math.round((runningBalance + (entry.debit - entry.credit)) * 100) / 100;
+    entry.running_balance = runningBalance;
+  }
+
+  res.json({
+    customer,
+    shop,
+    ledger: entries,
+    summary: {
+      total_purchases: customer.total_purchases,
+      outstanding_balance: customer.outstanding_balance,
+      total_bills: customer.total_bills,
+      entries_count: entries.length
+    }
+  });
+});
+
 // Record customer outstanding settlement payment
 router.post('/:id/payment', requireAuth, (req, res) => {
   const { id } = req.params;
@@ -144,16 +229,20 @@ router.post('/:id/payment', requireAuth, (req, res) => {
   }
 
   const today = new Date().toISOString().split('T')[0];
+  const receiptNumber = `REC-${Date.now().toString().slice(-6)}`;
+  let paymentId;
+  const balanceBefore = customer.outstanding_balance;
+  const newBalance = Math.max(0, Math.round((balanceBefore - payAmount) * 100) / 100);
 
   const txn = db.transaction(() => {
     // Insert into payments
-    db.prepare(`
+    const pResult = db.prepare(`
       INSERT INTO payments (customer_id, payment_date, payment_method, amount, reference_number, notes, received_by_user_id)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(id, today, payment_method || 'cash', payAmount, reference_number || null, notes || 'Outstanding settlement', req.user.id);
+    `).run(id, today, payment_method || 'cash', payAmount, reference_number || receiptNumber, notes || 'Outstanding settlement', req.user.id);
+    paymentId = pResult.lastInsertRowid;
 
     // Update customer outstanding
-    const newBalance = Math.max(0, Math.round((customer.outstanding_balance - payAmount) * 100) / 100);
     db.prepare('UPDATE customers SET outstanding_balance = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(newBalance, id);
 
     // Also distribute this payment to unpaid/partially paid invoices of this customer from oldest to newest
@@ -187,9 +276,26 @@ router.post('/:id/payment', requireAuth, (req, res) => {
   logAudit(req.user.id, req.user.full_name, 'CUSTOMER_PAYMENT', 'customers', id, `Received ₹${payAmount} payment via ${payment_method} from ${customer.name}`);
 
   const updatedCustomer = db.prepare('SELECT * FROM customers WHERE id = ?').get(id);
+  const shop = db.prepare('SELECT * FROM shop_settings WHERE id = 1').get();
+
   res.json({
     message: 'Payment recorded and credited successfully',
-    customer: updatedCustomer
+    customer: updatedCustomer,
+    receipt: {
+      receipt_number: receiptNumber,
+      payment_id: paymentId,
+      date: today,
+      amount: payAmount,
+      payment_method: payment_method || 'cash',
+      reference_number: reference_number || receiptNumber,
+      notes: notes || 'Khata settlement',
+      customer_name: customer.name,
+      customer_phone: customer.phone,
+      balance_before: balanceBefore,
+      balance_after: newBalance,
+      received_by: req.user.full_name,
+      shop
+    }
   });
 });
 

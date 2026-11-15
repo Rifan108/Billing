@@ -11,7 +11,9 @@ import {
   Wallet,
   ShieldCheck,
   Settings,
-  Scissors
+  Scissors,
+  Truck,
+  RotateCcw
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 
@@ -27,8 +29,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onNavigate }) => {
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'billing', label: 'New Billing', icon: Receipt, primary: true },
     { id: 'history', label: 'Billing History', icon: History },
+    { id: 'returns', label: 'Returns & Exchanges', icon: RotateCcw },
     { id: 'products', label: 'Products & Inventory', icon: Package },
-    { id: 'customers', label: 'Customers', icon: Users },
+    { id: 'purchases', label: 'Purchases & Suppliers', icon: Truck },
+    { id: 'customers', label: 'Customers & Khata', icon: Users },
     { id: 'gst', label: 'GST Reports', icon: FileSpreadsheet },
     { id: 'analytics', label: 'Sales Analytics', icon: TrendingUp },
     { id: 'payments', label: 'Payments', icon: CreditCard },
