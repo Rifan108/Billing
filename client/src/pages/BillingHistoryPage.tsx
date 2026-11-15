@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import api from '../services/api';
 import { Invoice } from '../types';
+import { WhatsAppShareModal } from '../components/billing/WhatsAppShareModal';
 
 interface BillingHistoryPageProps {
   onViewInvoice: (inv: Invoice, autoPrint?: boolean) => void;
@@ -51,6 +52,8 @@ export const BillingHistoryPage: React.FC<BillingHistoryPageProps> = ({ onViewIn
   const [settleAmount, setSettleAmount] = useState<number>(0);
   const [settleMethod, setSettleMethod] = useState('cash');
   const [settleRef, setSettleRef] = useState('');
+
+  const [whatsAppModalInvoice, setWhatsAppModalInvoice] = useState<Invoice | null>(null);
 
   const [actionLoading, setActionLoading] = useState(false);
   const [feedbackMsg, setFeedbackMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -433,24 +436,9 @@ export const BillingHistoryPage: React.FC<BillingHistoryPageProps> = ({ onViewIn
 
                         {/* WhatsApp Share */}
                         <button
-                          onClick={async () => {
-                            let phone = inv.customer_phone || '';
-                            if (!phone) {
-                              const input = prompt('Enter customer 10-digit mobile number for WhatsApp sharing:');
-                              if (!input) return;
-                              phone = input.trim();
-                            }
-                            try {
-                              const res = await api.get(`/invoices/${inv.id}/whatsapp?phone=${encodeURIComponent(phone)}`);
-                              if (res.data?.whatsappUrl) {
-                                window.open(res.data.whatsappUrl, '_blank');
-                              }
-                            } catch (e) {
-                              alert('Could not generate WhatsApp share link.');
-                            }
-                          }}
-                          className="p-1.5 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 rounded-lg transition-colors"
-                          title="Share Invoice on WhatsApp"
+                          onClick={() => setWhatsAppModalInvoice(inv)}
+                          className="p-1.5 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 rounded-lg transition-colors cursor-pointer"
+                          title="Share Invoice PDF on WhatsApp"
                         >
                           <MessageCircle className="w-4 h-4" />
                         </button>
@@ -785,6 +773,16 @@ export const BillingHistoryPage: React.FC<BillingHistoryPageProps> = ({ onViewIn
             </div>
           </div>
         </div>
+      )}
+
+      {/* WhatsApp Invoice PDF Share Modal */}
+      {whatsAppModalInvoice && (
+        <WhatsAppShareModal
+          isOpen={!!whatsAppModalInvoice}
+          invoice={whatsAppModalInvoice}
+          onClose={() => setWhatsAppModalInvoice(null)}
+          onSuccess={fetchInvoices}
+        />
       )}
 
     </div>

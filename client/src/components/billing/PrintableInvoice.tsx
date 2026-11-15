@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import api from '../../services/api';
 import { Invoice, ShopSettings } from '../../types';
+import { WhatsAppShareModal } from './WhatsAppShareModal';
 import {
   ThermalPaperWidth,
   QrCodeMode,
@@ -68,7 +69,7 @@ export const PrintableInvoice: React.FC<PrintableInvoiceProps> = ({
   const [qrReady, setQrReady] = useState<boolean>(false);
   const [printing, setPrinting] = useState<boolean>(false);
   const [downloading, setDownloading] = useState<boolean>(false);
-  const [sharingWhatsApp, setSharingWhatsApp] = useState<boolean>(false);
+  const [showWhatsAppModal, setShowWhatsAppModal] = useState<boolean>(false);
 
   // Remaining payable balance
   const remainingDue = typeof invoice.balance_due === 'number'
@@ -143,28 +144,8 @@ export const PrintableInvoice: React.FC<PrintableInvoiceProps> = ({
   };
 
   // One-click WhatsApp Invoice Sharing
-  const handleWhatsAppShare = async () => {
-    setSharingWhatsApp(true);
-    try {
-      let phone = invoice.customer_phone || '';
-      if (!phone) {
-        const input = prompt('Enter customer 10-digit mobile number for WhatsApp sharing:');
-        if (!input) {
-          setSharingWhatsApp(false);
-          return;
-        }
-        phone = input.trim();
-      }
-      const res = await api.get(`/invoices/${invoice.id}/whatsapp?phone=${encodeURIComponent(phone)}`);
-      if (res.data?.whatsappUrl) {
-        window.open(res.data.whatsappUrl, '_blank');
-      }
-    } catch (err) {
-      console.error('WhatsApp error:', err);
-      alert('Could not generate WhatsApp share link.');
-    } finally {
-      setSharingWhatsApp(false);
-    }
+  const handleWhatsAppShare = () => {
+    setShowWhatsAppModal(true);
   };
 
   const is58mm = paperWidth === '58mm';
@@ -224,12 +205,11 @@ export const PrintableInvoice: React.FC<PrintableInvoiceProps> = ({
         {/* WhatsApp Share Button */}
         <button
           onClick={handleWhatsAppShare}
-          disabled={sharingWhatsApp}
-          className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white font-bold rounded-xl text-xs transition-all shadow-md active:scale-95 cursor-pointer"
-          title="Share invoice summary on WhatsApp"
+          className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-700 hover:bg-emerald-600 text-white font-bold rounded-xl text-xs transition-all shadow-md active:scale-95 cursor-pointer"
+          title="Share invoice PDF & summary on WhatsApp"
         >
           <MessageCircle className="w-3.5 h-3.5 text-emerald-200" />
-          {sharingWhatsApp ? 'Preparing...' : 'WhatsApp'}
+          WhatsApp Share
         </button>
 
         {/* Close Button */}
@@ -526,6 +506,17 @@ export const PrintableInvoice: React.FC<PrintableInvoiceProps> = ({
         </div>
 
       </div>
+
+      {/* WhatsApp Invoice PDF Sharing Modal */}
+      {showWhatsAppModal && (
+        <WhatsAppShareModal
+          isOpen={showWhatsAppModal}
+          invoice={invoice}
+          shop={shop}
+          receiptElement={receiptRef.current}
+          onClose={() => setShowWhatsAppModal(false)}
+        />
+      )}
 
     </div>
   );

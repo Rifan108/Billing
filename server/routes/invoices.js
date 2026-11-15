@@ -480,38 +480,59 @@ router.get('/:id/whatsapp', requireAuth, (req, res) => {
 
   const shop = db.prepare('SELECT * FROM shop_settings WHERE id = 1').get();
   const shopName = shop?.shop_name || 'Sri Lakshmi Silks & Textiles';
-  const shopContact = shop?.contact_number || '';
 
-  // Clean phone number (Indian 10-digit mobile prefix with 91)
-  let rawPhone = (invoice.customer_phone || '').replace(/[^0-9]/g, '');
-  if (rawPhone.length === 10) {
-    rawPhone = `91${rawPhone}`;
+  // Support phone passed as query param or from invoice record
+  const inputPhone = (req.query.phone || '').trim();
+  const rawTargetPhone = inputPhone || invoice.customer_phone || '';
+
+  // Clean phone digits (handles +91, leading 0, spaces, dashes)
+  let digits = rawTargetPhone.replace(/\D/g, '');
+  if (digits.length === 11 && digits.startsWith('0')) digits = digits.slice(1);
+  if (digits.length === 12 && digits.startsWith('91')) digits = digits.slice(2);
+
+  const isValidIndianNumber = digits.length === 10 && /^[6-9]/.test(digits);
+  const internationalNumber = isValidIndianNumber ? `91${digits}` : (digits.length === 10 ? `91${digits}` : '');
+  const displayPhone = digits.length === 10 ? `+91 ${digits.slice(0, 5)} ${digits.slice(5)}` : rawTargetPhone;
+
+  // Persist updated phone to invoice and customer if supplied
+  if (inputPhone && digits.length === 10) {
+    db.prepare('UPDATE invoices SET customer_phone = ? WHERE id = ?').run(digits, id);
+    if (invoice.customer_id) {
+      db.prepare('UPDATE customers SET phone = ? WHERE id = ? AND (phone IS NULL OR phone = "")').run(digits, invoice.customer_id);
+    }
   }
 
-  const message = [
-    `🧾 *${shopName}*`,
-    `*Tax Invoice: ${invoice.invoice_number}*`,
-    `📅 Date: ${invoice.invoice_date} ${invoice.invoice_time || ''}`,
-    `👤 Customer: ${invoice.customer_name}`,
-    `📦 Total Items: ${invoice.total_items_count}`,
-    `💰 Bill Amount: ₹${invoice.grand_total.toFixed(2)}`,
-    `💳 Status: ${invoice.payment_status.toUpperCase()} (${invoice.payment_method.toUpperCase()})`,
-    invoice.balance_due > 0 ? `⚠️ Outstanding: ₹${invoice.balance_due.toFixed(2)}` : '✅ Fully Paid',
+  // Professional message format
+  const formattedTotal = Number(invoice.grand_total).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const balanceDue = Number(invoice.balance_due || 0);
+
+  const messageLines = [
+    `Thank you for shopping with us!`,
     ``,
-    `Thank you for shopping with us! Please keep this message for your records.`,
-    shopContact ? `📞 Contact: ${shopContact}` : ''
-  ].filter(Boolean).join('\n');
+    `Your invoice ${invoice.invoice_number} is ready.`,
+    ``,
+    `Total Amount: ₹${formattedTotal}`,
+    balanceDue > 0 ? `Balance Due: ₹${balanceDue.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : `Payment Status: Paid`,
+    ``,
+    `Thank you for choosing ${shopName}!`
+  ];
+  const message = messageLines.join('\n');
 
   // Record whatsapp_sent_at timestamp
   db.prepare("UPDATE invoices SET whatsapp_sent_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
 
   const encoded = encodeURIComponent(message);
-  const whatsappUrl = rawPhone ? `https://wa.me/${rawPhone}?text=${encoded}` : `https://wa.me/?text=${encoded}`;
+  const whatsappUrl = internationalNumber ? `https://wa.me/${internationalNumber}?text=${encoded}` : `https://wa.me/?text=${encoded}`;
+  const whatsappWebUrl = internationalNumber ? `https://web.whatsapp.com/send?phone=${internationalNumber}&text=${encoded}` : `https://web.whatsapp.com/send?text=${encoded}`;
 
   res.json({
-    phone: rawPhone,
+    phone: internationalNumber,
+    digits,
+    displayPhone,
+    isValid: isValidIndianNumber,
     message,
-    whatsappUrl
+    whatsappUrl,
+    whatsappWebUrl
   });
 });
 
